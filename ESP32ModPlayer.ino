@@ -2,31 +2,39 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 // #include <pwm_audio.h>
-#include "dac_audio.h"
+#include "pwm_audio.h"
 #include <driver/gpio.h>
 #include <math.h>
 #include <esp_log.h>
-#include "laamaa_-_saint_lager.h"
+// #include "laamaa_-_saint_lager.h"
 // #include "laamaa_-_it_is_a_synthwave.h"
 // #include "herberts2.h"
-// #include "8bit.h"
+// #include "tracker_data1.h"
 // #include "justice_96_remix.h"
+#include "long.h"
 #include "ssd1306.h"
 // #include "font8x8_basic.h"
 #include "vol_table.h"
 #include <string.h>
 #include "esp32-hal-cpu.h"
 #include <Adafruit_ST7735.h>
+#include <SPI.h>
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #define MOUNT_POINT "/sdcard"
 
-#define TFT_DC 27
-#define TFT_CS 12
-#define TFT_RST 33
-
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
+#define TFT_DC 3
+#define TFT_CS 10
+#define TFT_RST 8
+/*
+#define HSPI_MISO 16 //19 
+#define HSPI_MOSI 17 //23 
+#define HSPI_SCLK 18
+#define HSPI_CS0 10  // accel chip
+*/
+// Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -55,7 +63,7 @@ class  aFrameBuffer : public Adafruit_GFX {
       tft.setAddrWindow(0, 0, 160, 128);
       digitalWrite(TFT_DC, HIGH);
       digitalWrite(TFT_CS, LOW);
-      SPI.beginTransaction(SPISettings(70000000, MSBFIRST, SPI_MODE0));
+      SPI.beginTransaction(SPISettings(70000000, MSBFIRST, SPI_MODE1));
       for (uint16_t i = 0; i < 160 * 128; i++)
       {
         SPI.transfer16(buffer[i]);
@@ -68,7 +76,7 @@ class  aFrameBuffer : public Adafruit_GFX {
 aFrameBuffer frame(160, 128);
 
 #define BUFF_SIZE 2048
-#define SMP_RATE 44100
+#define SMP_RATE 48000
 #define SMP_BIT 8
 int8_t buffer_ch[4][BUFF_SIZE];
 int8_t buffer[BUFF_SIZE];
@@ -94,7 +102,7 @@ int8_t tracker_point = 0;
 bool dispRedy = false;
 bool playStat = true;
 
-const uint32_t patch_table[16] = {3546836, 3555123, 3563410, 3571697, 3579984, 3588271, 3596558, 3604845,
+const float patch_table[16] = {3546836, 3555123, 3563410, 3571697, 3579984, 3588271, 3596558, 3604845,
                          3538549, 3530262, 3521975, 3513688, 3505401, 3497114, 3488827, 3480540};
 
 inline void hexToDecimal(uint8_t num, uint8_t *tens, uint8_t *ones) {
@@ -157,19 +165,19 @@ bool mute[4] = {false};
 // OSC START -----------------------------------------------------
 void display(void *arg) {
     SSD1306_t dev;
-    i2c_master_init(&dev, 21, 22, -1);
+    i2c_master_init(&dev, 42, 41, -1);
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
     // bool bs = 0;
     ssd1306_display_text(&dev, 2, "LOADING....", 14, false);
     vTaskDelay(2);
-    for (;;) {
-        vTaskDelay(2);
-        if (dispRedy) {
-            break;
-        }
-    }
+    //for (;;) {
+    //    vTaskDelay(2);
+    //    if (dispRedy) {
+    //        break;
+    //    }
+    //}
     for (;;) {
         uint8_t x;
         uint8_t volTemp;
@@ -274,13 +282,13 @@ uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
 int8_t sample1;
 int8_t sample2;
-int8_t make_data(uint16_t freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
-    if (vole <= 0 || freq < 0) {
+inline int8_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
+    if (vole <= 0 || freq < 0 || mute[chl]) {
         return 0;
     }
     // 更新通道的数据索引
     data_index_int[chl] = roundf(data_index[chl]);
-    data_index[chl] += (float)freq / (SMP_RATE<<1);
+    data_index[chl] += (float)freq / SMP_RATE;
     // 检查是否启用了循环
     if (isLoop) {
         // 如果启用了循环，则调整索引
@@ -339,6 +347,7 @@ int8_t ChlPos = 0;
 // bool ChlMenu = false;
 int8_t ChlMenuPos = 0;
 bool windowsClose = true;
+int8_t MenuPos = 0;
 
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
@@ -380,10 +389,9 @@ void setMidCusr(uint8_t w, uint8_t h, int8_t ofst) {
     frame.setCursor(80-(w>>1)+ofst, 64-(h>>1)+ofst);
 }
 
-void display_lcd(void *arg) {
-    tft.initR(INITR_BLACKTAB);
-    tft.setRotation(3);
-    tft.fillScreen(ST7735_BLACK);
+inline void MainReDraw() {
+    frame.fillScreen(ST7735_BLACK);
+    frame.setTextWrap(true);
     frame.setTextSize(1);
     frame.setTextColor(0x2945);
     frame.setCursor(2, 2);
@@ -398,16 +406,17 @@ void display_lcd(void *arg) {
     frame.print("ESP32Tracker");
     frame.setTextColor(ST7735_WHITE);
     frame.setTextSize(0);
-    frame.setTextWrap(true);
-    char cbuf[24];
-    uint16_t showTmpNote;
-    uint8_t showTmpSamp;
-    uint8_t showTmpEFX1;
-    uint8_t showTmpEFX2_1;
-    uint8_t showTmpEFX2_2;
-    lcdOK = false;
+}
+
+uint16_t showTmpNote;
+uint8_t showTmpSamp;
+uint8_t showTmpEFX1;
+uint8_t showTmpEFX2_1;
+uint8_t showTmpEFX2_2;
+
+inline void MainPage() {
     for (;;) {
-//----------------------MAIN PAGH-------------------------
+        //----------------------MAIN PAGE-------------------------
         frame.setCursor(0, 56);
         if (ChlPos == 0) {
             frame.fillRect(0, 56, 13, 72, 0x630c);
@@ -424,7 +433,8 @@ void display_lcd(void *arg) {
             }
         }
         // frame.fillRect(0, 56, 155, 72, 0x2945);
-        frame.drawRect(0, 88, 160, 8, 0x6b7e);
+        frame.drawRect(0, 88, 160, 8, 0xd69a);
+        // frame.drawRect(1, 89, 160, 8, 0x7bcf);
         // printf("%d %d\n", i, tracker_point+i);
         for (int8_t i = -4; i < 5; i++) {
             if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
@@ -433,9 +443,6 @@ void display_lcd(void *arg) {
                 for (uint8_t chl = 0; chl < 4; chl++) {
                     showTmpNote = part_buffer[part_buffer_point][tracker_point+i][chl][0];
                     showTmpSamp = part_buffer[part_buffer_point][tracker_point+i][chl][1];
-                    showTmpEFX1 = part_buffer[part_buffer_point][tracker_point+i][chl][2];
-                    showTmpEFX2_1 = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][chl][3]);
-                    showTmpEFX2_2 = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][chl][3]);
                     frame.setCursor(frame.getCursorX()+4, frame.getCursorY());
                     if (showTmpNote) {
                         frame.setTextColor(0xa51f);
@@ -454,19 +461,6 @@ void display_lcd(void *arg) {
                     }
                 }
                 frame.printf("\n");
-                /*
-                frame.printf("%2d %3d %2d %1X%1X%1X  %3d %2d %1X%1X%1X\n", tracker_point+i,
-                    part_buffer[part_buffer_point][tracker_point+i][0][0],
-                        part_buffer[part_buffer_point][tracker_point+i][0][1],
-                            part_buffer[part_buffer_point][tracker_point+i][0][2],
-                                hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][0][3]),
-                                hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][0][3]),
-                    part_buffer[part_buffer_point][tracker_point+i][1][0],
-                        part_buffer[part_buffer_point][tracker_point+i][1][1],
-                            part_buffer[part_buffer_point][tracker_point+i][1][2],
-                                hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][1][3]),
-                                hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][1][3]));
-                */
             } else {
                 frame.printf("\n");
             }
@@ -477,10 +471,10 @@ void display_lcd(void *arg) {
         frame.printf("BPM: %d", BPM);
 
         frame.setCursor(1, 29);
-        frame.printf("SPD: %d", SPD);
+        frame.printf("SPD: %d %d", SPD, part_buffer_point);
 
         if (ChlMenuPos) {
-            fillMidRect(90, 50, 0x528a);
+            fillMidRect(90, 50, 0x4208);
             drawMidRect(90, 50, ST7735_WHITE);
             frame.setTextColor(0x7bcf);
             setMidCusr(90, 50, 3);
@@ -491,7 +485,7 @@ void display_lcd(void *arg) {
             setMidCusr(90, 50, 2);
             uint8_t CXTmp = frame.getCursorX()+4;
             frame.setCursor(CXTmp, frame.getCursorY()+14);
-            frame.drawRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((ChlMenuPos-1)*11), 72, 11, ST7735_WHITE);
+            frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((ChlMenuPos-1)*11), 72, 11, 0x7bef);
             if (mute[ChlPos-1]) {
                 frame.printf("unMute\n");
             } else {
@@ -516,6 +510,20 @@ void display_lcd(void *arg) {
                     ChlMenuPos = 1;
                 }
             }
+            if (keyL) {
+                keyL = false;
+                ChlPos--;
+                if (ChlPos < 1) {
+                    ChlPos = 4;
+                }
+            }
+            if (keyR) {
+                keyR = false;
+                ChlPos++;
+                if (ChlPos > 4) {
+                    ChlPos = 1;
+                }
+            }
             if (keyOK) {
                 keyOK = false;
                 if (ChlMenuPos == 3) {
@@ -524,6 +532,10 @@ void display_lcd(void *arg) {
                 }
                 if (ChlMenuPos == 1) {
                     mute[ChlPos-1] = !mute[ChlPos-1];
+                }
+                if (ChlMenuPos == 2) {
+                    MenuPos = 1;
+                    break;
                 }
             }
         }
@@ -536,6 +548,7 @@ void display_lcd(void *arg) {
             frame.drawFastVLine(156, 56, 72, 0x4a51);
             frame.drawFastVLine(157, 56, 72, 0x6b7e);
             frame.drawFastVLine(158, 56, 72, 0xad7f);
+            frame.drawFastVLine(159, 56, 72, 0xa514);
 
             frame.drawFastVLine(12, 56, 72, 0x4a51);
             frame.drawFastVLine(13, 56, 72, 0x6b7e);
@@ -556,9 +569,9 @@ void display_lcd(void *arg) {
         }
 
         frame.display();
-        vTaskDelay(1);
-//----------------------MAIN PAGH-------------------------
-//----------------------KEY STATUS------------------------
+        vTaskDelay(2);
+        //----------------------MAIN PAGH-------------------------
+        //----------------------KEY STATUS------------------------
         if (!ChlMenuPos) {
             if (keyOK) {
                 keyOK = false;
@@ -590,7 +603,117 @@ void display_lcd(void *arg) {
             }
         }
     }
-    vTaskDelete(NULL);
+}
+
+inline void ChlEdit() {
+    frame.setTextSize(2);
+    frame.setCursor(0, 12);
+    frame.printf("CHL%d", ChlPos);
+    frame.setTextSize(0);
+    frame.setCursor(0, 0);
+    frame.drawFastVLine(77, 0, 128, 0x4a51);
+    frame.drawFastVLine(78, 0, 128, 0x6b7e);
+    frame.drawFastVLine(79, 0, 128, 0xad7f);
+    for (;;) {
+        frame.fillRect(80, 0, 80, 128, 0x2945);
+        vTaskDelay(2);
+        frame.setCursor(81, 0);
+        for (int8_t i = -7; i < 9; i++) {
+            if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
+                frame.setTextColor(0xf7be);
+                frame.printf("%2d", tracker_point+i);
+                showTmpNote = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][0];
+                showTmpSamp = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][1];
+                showTmpEFX1 = part_buffer[part_buffer_point][tracker_point+i][ChlPos][2];
+                showTmpEFX2_1 = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
+                showTmpEFX2_2 = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
+                frame.setCursor(frame.getCursorX()+5, frame.getCursorY());
+                if (showTmpNote) {
+                    frame.setTextColor(0xa51f);
+                    frame.printf("%s ", findNote(showTmpNote));
+                } else {
+                    frame.setTextColor(0x52aa);
+                    frame.printf("... ");
+                }
+                if (showTmpSamp) {
+                    frame.setTextColor(0x2c2a);
+                    frame.printf("%2d ", showTmpSamp);
+                } else {
+                    frame.setTextColor(0x52aa);
+                    frame.printf(".. ");
+                }
+                if (showTmpEFX1 || showTmpEFX2_1 || showTmpEFX2_2) {
+                    frame.setTextColor(0xfc8f);
+                    frame.printf("%X", showTmpEFX1);
+                    frame.setTextColor(0xff14);
+                    frame.printf("%X%X", showTmpEFX2_1, showTmpEFX2_2);
+                } else {
+                    frame.setTextColor(0x52aa);
+                    frame.printf("...");
+                }
+                frame.printf("\n");
+                frame.setCursor(81, frame.getCursorY());
+            } else {
+                frame.printf("\n");
+                frame.setCursor(81, frame.getCursorY());
+            }
+        }
+        frame.drawFastVLine(93, 0, 128, 0x9492);
+        frame.drawFastVLine(94, 0, 128, 0xb5b6);
+        frame.drawFastVLine(95, 0, 128, 0xad7f);
+        frame.drawFastVLine(159, 0, 128, 0xc618);
+        frame.display();
+        if (keyOK) {
+            keyOK = false;
+            MenuPos = 0;
+            break;
+        }
+        if (keyUP) {
+            keyUP = false;
+            tracker_point--;
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            tracker_point++;
+        }
+    }
+}
+
+void display_lcd(void *arg) {
+    // hspi.begin(HSPI_SCLK, HSPI_MISO, HSPI_MOSI, HSPI_CS0);
+    tft.initR(INITR_BLACKTAB);
+    tft.setRotation(3);
+    tft.fillScreen(ST7735_BLUE);
+    frame.setTextWrap(true);
+    frame.setTextSize(1);
+    frame.setTextColor(0x2945);
+    frame.setCursor(2, 2);
+    frame.print("ESP32Tracker");
+    frame.setTextColor(0x7bcf);
+    frame.setCursor(1, 1);
+    frame.print("ESP32Tracker");
+    frame.setCursor(100, 0);
+    frame.print("libchara");
+    frame.setTextColor(ST7735_WHITE);
+    frame.setCursor(0, 0);
+    frame.print("ESP32Tracker");
+    frame.setTextColor(ST7735_WHITE);
+    frame.setTextSize(0);
+    // char cbuf[24];
+    lcdOK = false;
+    for (;;) {
+        if (MenuPos == 0) {
+            MainReDraw();
+            windowsClose = true;
+            MainPage();
+            vTaskDelay(4);
+        } else if (MenuPos == 1) {
+            MainReDraw();
+            ChlEdit();
+            vTaskDelay(4);
+        }
+        vTaskDelay(4);
+    }
 }
 
 // COMP TASK START ----------------------------------------------
@@ -621,41 +744,27 @@ void comp(void *arg) {
     uint8_t TremoloDepth[4] = {32};
     int VibratoItem[4] = {0};
     uint16_t Mtick = 0;
-    uint32_t frq[4] = {0};
-    uint16_t TICK_NUL = roundf((SMP_RATE<<1) / (125 * 0.4));
+    float frq[4] = {0};
+    uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
     uint8_t volTemp[4];
     uint16_t OfstCfg[4];
     uint8_t rowLoopStart = 0;
     int8_t rowLoopCont = 0;
     bool enbRowLoop = false;
     // uint16_t arpLastNote[4] = {0};
-    /*
     pwm_audio_config_t pwm_audio_config = {
-        .gpio_num_left = GPIO_NUM_26,
+        .gpio_num_left = GPIO_NUM_5,
         .ledc_channel_left = LEDC_CHANNEL_0,
         .ledc_timer_sel = LEDC_TIMER_0,
         .duty_resolution = LEDC_TIMER_8_BIT,
-        .ringbuf_len = BUFF_SIZE
+        .ringbuf_len = BUFF_SIZE<<1
     };
-    pwm_audio_init(&pwm_audio_config);
-    pwm_audio_set_param(SMP_RATE, SMP_BIT, 1);
+    printf("PWM AUDIO RETURN %d\n", pwm_audio_init(&pwm_audio_config));
+    pwm_audio_set_param(SMP_RATE, (ledc_timer_bit_t)SMP_BIT, 1);
     pwm_audio_start();
     // pwm_audio_set_volume(0);
-    pwm_audio_write(&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
-    */
-    dac_audio_config_t dac_audio_config = {
-        .i2s_num = I2S_NUM_0,
-        .sample_rate = SMP_RATE,
-        .bits_per_sample = (i2s_bits_per_sample_t)SMP_BIT,
-        .dac_mode = I2S_DAC_CHANNEL_BOTH_EN,
-        .dma_buf_count = 4,
-        .dma_buf_len = 256,
-        .max_data_size = BUFF_SIZE << 1
-    };
-    dac_audio_init(&dac_audio_config);
-    dac_audio_set_param(SMP_RATE, SMP_BIT, 1);
-    dac_audio_start();
-    dac_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
+    pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
+    printf("READ!\n");
     vTaskDelay(128);
     dispRedy = true;
     uint8_t chl;
@@ -664,22 +773,24 @@ void comp(void *arg) {
     uint8_t RetriggerConfig[4] = {0};
     int16_t audio_temp;
     while(true) { if (playStat) {
-        for(uint16_t i = 0; i < BUFF_SIZE; i++) {
+        // for(uint16_t i = 0; i < BUFF_SIZE; i++) {
+        while (true) {
             for(chl = 0; chl < 4; chl++) {
                 if (wave_info[smp_num[chl]][4] > 2) {
-                    buffer_ch[chl][i] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]*2, wave_info[smp_num[chl]][4]*2, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
+                    buffer_ch[chl][Mtick] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]*2, wave_info[smp_num[chl]][4]*2, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
                 } else {
-                    buffer_ch[chl][i] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
+                    buffer_ch[chl][Mtick] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
                 }
             }
-            audio_temp = (mute[0] ? 0 : buffer_ch[0][i])
-                            + (mute[1] ? 0 : buffer_ch[1][i])
-                                + (mute[2] ? 0 : buffer_ch[2][i])
-                                    + (mute[3] ? 0 : buffer_ch[3][i]);
+            audio_temp = buffer_ch[0][Mtick]
+                            + buffer_ch[1][Mtick]
+                                + buffer_ch[2][Mtick]
+                                    + buffer_ch[3][Mtick];
             limit(audio_temp);
-            buffer[i] = (int8_t)clamp((audio_temp / comper), -127, 126);//limit(audio_temp);
+            buffer[Mtick] = (int8_t)clamp((audio_temp / comper), -127, 126);//limit(audio_temp);
             Mtick++;
             if (Mtick == TICK_NUL) {
+                pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
                 Mtick = 0;
                 tick_time++;
                 arp_p++;
@@ -886,7 +997,7 @@ void comp(void *arg) {
                                 SPD = part_buffer[part_buffer_point][tracker_point][chl][3];
                                 // printf("SPD SET TO %d\n", tick_speed);
                             } else {
-                                TICK_NUL = roundf((SMP_RATE << 1) / (part_buffer[part_buffer_point][tracker_point][chl][3] * 0.4));
+                                TICK_NUL = roundf(SMP_RATE / (part_buffer[part_buffer_point][tracker_point][chl][3] * 0.4));
                                 BPM = part_buffer[part_buffer_point][tracker_point][chl][3];
                                 // printf("MTICK SET TO %d\n", TICK_NUL);
                             }
@@ -933,12 +1044,10 @@ void comp(void *arg) {
                         }
                         printf("%d\n", part_buffer_point);
                         skipToNextPart = false;
-                        part_buffer_point++;
-                        if (part_buffer_point > 1){
-                            part_buffer_point = 0;
-                        }
+                        part_buffer_point = !part_buffer_point;
                         loadOk = true;
                     }
+                    vTaskDelay(1);
                 }
                 for (chl = 0; chl < 4; chl++) {
                     if (period[chl] != 0) {
@@ -967,7 +1076,8 @@ void comp(void *arg) {
             }
         }
         // apply_delay(&buffer, BUFF_SIZE);
-        dac_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
+        // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
+        // printf("pwm wrin %d\n", wrin);
         if (!playStat) {
             memset(&buffer, 0, BUFF_SIZE);
             memset(&buffer_ch[0], 0, BUFF_SIZE);
@@ -975,11 +1085,35 @@ void comp(void *arg) {
             memset(&buffer_ch[2], 0, BUFF_SIZE);
             memset(&buffer_ch[3], 0, BUFF_SIZE);
             vTaskDelay(32);
-            dac_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
+            pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
         }
-        // vTaskDelay(1);
+        vTaskDelay(1);
         //ESP_LOGI("STEP_SIZE", "%d %d", wrin, BUFF_SIZE);
     } else {
+        if (tracker_point > 63) {
+            tracker_point = 0;
+            showPart++;
+            if (showPart >= NUM_PATTERNS) {
+                showPart = 0;
+            }
+            printf("SKIP TO %d\n", part_point);
+            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
+            part_buffer_point = !part_buffer_point;
+            part_point++;
+            printf("%d\n", part_buffer_point);
+        }
+        if (tracker_point < 0) {
+            tracker_point = 63;
+            showPart--;
+            if (showPart < 0) {
+                showPart = NUM_PATTERNS;
+            }
+            printf("SKIP TO %d\n", part_point);
+            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
+            part_buffer_point = !part_buffer_point;
+            part_point--;
+            printf("%d\n", part_buffer_point);
+        }
         vTaskDelay(64);
     }}
 }
@@ -1141,6 +1275,7 @@ void setup()
     sdmmc_card_t *card;
     const char mount_point[] = "/sdcard";
     printf("Initializing SD card...\n");
+    /*
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_NUM_MOSI,
@@ -1173,9 +1308,10 @@ void setup()
     }
     ESP_LOGI(TAG, "Filesystem mounted");
     sdmmc_card_print_info(stdout, card);
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 4, NULL, 1);
-    xTaskCreatePinnedToCore(&display, "wave_view", 7000, NULL, 5, NULL, 0);
+    */
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
+    xTaskCreate(&display, "wave_view", 7000, NULL, 5, NULL);
     // xTaskCreatePinnedToCore(&Cpu_task, "cpu_task", 4096, NULL, 0, NULL, 0);
 /*
     for (int i = 0; i < NUM_PATTERNS; i++) {
@@ -1191,15 +1327,18 @@ void setup()
         ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3]*2, (wave_info[i][3]*2)+(wave_info[i][4]*2), find_max(NUM_PATTERNS)+1);
     }
     read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-    while(lcdOK) {
-        vTaskDelay(4);
-    }
+    // while(lcdOK) {
+    //     vTaskDelay(4);
+    // }
     vTaskDelay(512);
-    xTaskCreate(&comp, "Play", 9000, NULL, 6, NULL);
-    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 1);
+    printf("MAIN EXIT\n");
+    xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, NULL, 0);
+    // xTaskCreate(&comp, "Play", 9000, NULL, 4, NULL);
+    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 0);
 }
-
+/*
 void loop() {
     printf("DELETE LOOP\n");
     vTaskDelete(NULL);
 }
+*/

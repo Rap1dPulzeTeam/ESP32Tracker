@@ -7,18 +7,17 @@
 #include <math.h>
 #include <esp_log.h>
 // #include "laamaa_-_saint_lager.h"
-// #include "laamaa_-_it_is_a_synthwave.h"
+#include "laamaa_-_it_is_a_synthwave.h"
 // #include "herberts2.h"
 // #include "tracker_data1.h"
 // #include "justice_96_remix.h"
-#include "long.h"
+// #include "8bit.h"
 #include "ssd1306.h"
 // #include "font8x8_basic.h"
 #include "vol_table.h"
 #include <string.h>
 #include "esp32-hal-cpu.h"
 #include <Adafruit_ST7735.h>
-#include <SPI.h>
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -76,7 +75,7 @@ class  aFrameBuffer : public Adafruit_GFX {
 aFrameBuffer frame(160, 128);
 
 #define BUFF_SIZE 2048
-#define SMP_RATE 48000
+#define SMP_RATE 44100
 #define SMP_BIT 8
 int8_t buffer_ch[4][BUFF_SIZE];
 int8_t buffer[BUFF_SIZE];
@@ -433,7 +432,7 @@ inline void MainPage() {
             }
         }
         // frame.fillRect(0, 56, 155, 72, 0x2945);
-        frame.drawRect(0, 88, 160, 8, 0xd69a);
+        frame.drawRect(0, 87, 160, 9, 0xd69a);
         // frame.drawRect(1, 89, 160, 8, 0x7bcf);
         // printf("%d %d\n", i, tracker_point+i);
         for (int8_t i = -4; i < 5; i++) {
@@ -624,7 +623,7 @@ inline void ChlEdit() {
                 frame.printf("%2d", tracker_point+i);
                 showTmpNote = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][0];
                 showTmpSamp = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][1];
-                showTmpEFX1 = part_buffer[part_buffer_point][tracker_point+i][ChlPos][2];
+                showTmpEFX1 = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][2];
                 showTmpEFX2_1 = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
                 showTmpEFX2_2 = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
                 frame.setCursor(frame.getCursorX()+5, frame.getCursorY());
@@ -757,7 +756,7 @@ void comp(void *arg) {
         .ledc_channel_left = LEDC_CHANNEL_0,
         .ledc_timer_sel = LEDC_TIMER_0,
         .duty_resolution = LEDC_TIMER_8_BIT,
-        .ringbuf_len = BUFF_SIZE<<1
+        .ringbuf_len = BUFF_SIZE
     };
     printf("PWM AUDIO RETURN %d\n", pwm_audio_init(&pwm_audio_config));
     pwm_audio_set_param(SMP_RATE, (ledc_timer_bit_t)SMP_BIT, 1);
@@ -774,7 +773,6 @@ void comp(void *arg) {
     int16_t audio_temp;
     while(true) { if (playStat) {
         // for(uint16_t i = 0; i < BUFF_SIZE; i++) {
-        while (true) {
             for(chl = 0; chl < 4; chl++) {
                 if (wave_info[smp_num[chl]][4] > 2) {
                     buffer_ch[chl][Mtick] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]*2, wave_info[smp_num[chl]][4]*2, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
@@ -1047,7 +1045,6 @@ void comp(void *arg) {
                         part_buffer_point = !part_buffer_point;
                         loadOk = true;
                     }
-                    vTaskDelay(1);
                 }
                 for (chl = 0; chl < 4; chl++) {
                     if (period[chl] != 0) {
@@ -1073,23 +1070,24 @@ void comp(void *arg) {
                         frq[chl] = arpFreq[arp_p][chl];
                     }
                 }
+                vTaskDelay(1);
             }
-        }
+            if (!playStat) {
+                memset(&buffer, 0, BUFF_SIZE);
+                memset(&buffer_ch[0], 0, BUFF_SIZE);
+                memset(&buffer_ch[1], 0, BUFF_SIZE);
+                memset(&buffer_ch[2], 0, BUFF_SIZE);
+                memset(&buffer_ch[3], 0, BUFF_SIZE);
+                vTaskDelay(32);
+                pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
+                vTaskDelay(1);
+            }
         // apply_delay(&buffer, BUFF_SIZE);
         // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
         // printf("pwm wrin %d\n", wrin);
-        if (!playStat) {
-            memset(&buffer, 0, BUFF_SIZE);
-            memset(&buffer_ch[0], 0, BUFF_SIZE);
-            memset(&buffer_ch[1], 0, BUFF_SIZE);
-            memset(&buffer_ch[2], 0, BUFF_SIZE);
-            memset(&buffer_ch[3], 0, BUFF_SIZE);
-            vTaskDelay(32);
-            pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
-        }
-        vTaskDelay(1);
         //ESP_LOGI("STEP_SIZE", "%d %d", wrin, BUFF_SIZE);
     } else {
+        loadOk = false;
         if (tracker_point > 63) {
             tracker_point = 0;
             showPart++;
@@ -1097,10 +1095,9 @@ void comp(void *arg) {
                 showPart = 0;
             }
             printf("SKIP TO %d\n", part_point);
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
-            part_buffer_point = !part_buffer_point;
-            part_point++;
+            read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
             printf("%d\n", part_buffer_point);
+            loadOk = true;
         }
         if (tracker_point < 0) {
             tracker_point = 63;
@@ -1109,10 +1106,9 @@ void comp(void *arg) {
                 showPart = NUM_PATTERNS;
             }
             printf("SKIP TO %d\n", part_point);
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
-            part_buffer_point = !part_buffer_point;
-            part_point--;
+            read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
             printf("%d\n", part_buffer_point);
+            loadOk = true;
         }
         vTaskDelay(64);
     }}
@@ -1333,7 +1329,7 @@ void setup()
     vTaskDelay(512);
     printf("MAIN EXIT\n");
     xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, NULL, 0);
-    // xTaskCreate(&comp, "Play", 9000, NULL, 4, NULL);
+    // xTaskCreate(&comp, "Play", 9000, NULL, 5, NULL);
     xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 0);
 }
 /*

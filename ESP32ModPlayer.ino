@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 // #include <pwm_audio.h>
@@ -6,12 +8,6 @@
 #include <driver/gpio.h>
 #include <math.h>
 #include <esp_log.h>
-// #include "laamaa_-_saint_lager.h"
-#include "laamaa_-_it_is_a_synthwave.h"
-// #include "herberts2.h"
-// #include "tracker_data1.h"
-// #include "justice_96_remix.h"
-// #include "8bit.h"
 #include "ssd1306.h"
 // #include "font8x8_basic.h"
 #include "vol_table.h"
@@ -19,13 +15,20 @@
 #include "esp32-hal-cpu.h"
 #include <Adafruit_ST7735.h>
 
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
+#include "esp_spiffs.h"
+#include <dirent.h>
+#include "listfile.h"
+#include "NULL_MOD.h"
+#include "driver/i2s.h"
+#include "driver/gpio.h"
+#include "esp_debug_helpers.h"
+
 #define MOUNT_POINT "/sdcard"
 
 #define TFT_DC 3
 #define TFT_CS 10
 #define TFT_RST 8
+uint8_t *tracker_data;
 /*
 #define HSPI_MISO 16 //19 
 #define HSPI_MOSI 17 //23 
@@ -77,8 +80,8 @@ aFrameBuffer frame(160, 128);
 #define BUFF_SIZE 2048
 #define SMP_RATE 44100
 #define SMP_BIT 8
-int8_t buffer_ch[4][BUFF_SIZE];
-int8_t buffer[BUFF_SIZE];
+float buffer_ch[4][BUFF_SIZE];
+int16_t buffer[BUFF_SIZE];
 float time_step = 1.0 / SMP_RATE;
 
 size_t wrin;
@@ -96,13 +99,15 @@ uint8_t NUM_PATTERNS;
 uint8_t part_table[128];
 uint8_t part_point = 1;
 int8_t tracker_point = 0;
+char song_name[20];
+char samp_name[33][22];
 
 #define BASE_FREQ 8267
 bool dispRedy = false;
-bool playStat = true;
+bool playStat = false;
 
-const float patch_table[16] = {3546836, 3555123, 3563410, 3571697, 3579984, 3588271, 3596558, 3604845,
-                         3538549, 3530262, 3521975, 3513688, 3505401, 3497114, 3488827, 3480540};
+const float patch_table[16] = {3546836.0, 3572537.835745873, 3598425.9175884672, 3624501.595143772, 3650766.227807657, 3677221.184826728, 3703867.8453697185, 3730707.5985993897,
+                         3347767.391694687, 3372026.6942439806, 3396461.7896998064, 3421073.9519300302, 3445864.464033491, 3470834.61840689, 3495985.7168121682, 3521319.0704443706};
 
 inline void hexToDecimal(uint8_t num, uint8_t *tens, uint8_t *ones) {
     *tens = (num >> 4) & 0x0F;
@@ -146,11 +151,82 @@ void limit(float a) {
         lmtP = 0;
     }
 }
+// 读取文件并存储到动态分配的内存中
+uint8_t* read_file(const char* path, long* file_size) {
+    FILE* file = fopen(path, "rb"); // 以二进制只读模式打开文件
+    if (!file) {
+        printf("Failed to open file for reading\n");
+        return NULL;
+    }
+
+    // 获取文件大小
+    fseek(file, 0, SEEK_END);
+    *file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // 动态分配内存来存储文件内容
+    uint8_t* buffer = (uint8_t*)malloc(*file_size);
+    if (!buffer) {
+        printf("Failed to allocate memory\n");
+        fclose(file);
+        return NULL;
+    }
+
+    // 读取文件内容到动态分配的内存中
+    size_t bytes_read = fread(buffer, 1, *file_size, file);
+    if (bytes_read != *file_size) {
+        printf("Failed to read file\n");
+        fclose(file);
+        free(buffer);
+        return NULL;
+    }
+
+    fclose(file);
+    return buffer;
+}
+
+long read_tracker_file(const char* path) {
+    printf("NOW READ FILE %s\n", path);
+    free(tracker_data);
+    long file_size;
+    tracker_data = read_file(path, &file_size);
+    if ((tracker_data == NULL) || (file_size == 0)) {
+        printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, file_size);
+        free(tracker_data);
+        return 0;
+    } else {
+        if ((tracker_data[1080] != 0x4D) ||
+            (tracker_data[1081] != 0x2E) ||
+            (tracker_data[1082] != 0x4B) ||
+            (tracker_data[1083] != 0x2E)) {
+            printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, tracker_data[1080], tracker_data[1081], tracker_data[1082], tracker_data[1083]);
+            free(tracker_data);
+            return -1;
+        }
+        printf("READ %s FINISH! FILE SIZE IS %ld\n", path, file_size);
+    }
+    return file_size;
+}
+
+bool new_tracker_file() {
+    free(tracker_data);
+    tracker_data = (uint8_t *)malloc(2108);
+    if (tracker_data == NULL) {
+        printf("CREATE NEW FILE ON MEM FAILED!\n");
+        return 1;
+    }
+    for (uint16_t p = 0; p < 2108; p++) {
+        tracker_data[p] = tracker_null[p];
+    }
+    printf("CREATE NEW FILE ON MEM FINISH!\n");
+    return 0;
+}
 // **************************INIT*END****************************
 
 char ten[28];
 int8_t vol[CHL_NUM] = {0};
 int16_t period[4] = {1};
+float frq[4] = {0};
 float data_index[CHL_NUM] = {0};
 uint16_t data_index_int[CHL_NUM] = {0};
 uint8_t smp_num[CHL_NUM] = {0};
@@ -164,7 +240,7 @@ bool mute[4] = {false};
 // OSC START -----------------------------------------------------
 void display(void *arg) {
     SSD1306_t dev;
-    i2c_master_init(&dev, 42, 41, -1);
+    i2c_master_init(&dev, 1, 2, -1);
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
@@ -181,7 +257,7 @@ void display(void *arg) {
         uint8_t x;
         uint8_t volTemp;
         uint8_t addr[4];
-        for (uint8_t contr = 0; contr < 4; contr++) {
+        for (uint8_t contr = 0; contr < 2; contr++) {
             ssd1306_clear_buffer(&dev);
             sprintf(ten, "  %2d %2d>%2d %.3f", tracker_point, showPart, part_table[showPart], comper);
             addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
@@ -194,7 +270,9 @@ void display(void *arg) {
             if (!mute[0]) {
             for (x = 0; x < 32; x++) {
                 _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 4) + 32, false);
-                _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))%64, false);
+                if (period[0]) {
+                    _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))%64, false);
+                }
                 // printf("DISPLAY %d\n", roundf(period[0] * (64.0f / 743.0f)));
                 volTemp = (vol[0]/2) % 64;
                 _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
@@ -208,7 +286,9 @@ void display(void *arg) {
             if (!mute[1]) {
             for (x = 32; x < 64; x++) {
                 _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 4) + 32, false);
-                _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))%64, false);
+                if (period[1]) {
+                    _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))%64, false);
+                }
                 volTemp = vol[1]/2;
                 _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
                 for (uint8_t i = 58; i < 64; i++) {
@@ -221,7 +301,9 @@ void display(void *arg) {
             if (!mute[2]) {
             for (x = 64; x < 96; x++) {
                 _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 4) + 32, false);
-                _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))%64, false);
+                if (period[2]) {
+                    _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))%64, false);
+                }
                 volTemp = vol[2]/2;
                 _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
                 for (uint8_t i = 58; i < 64; i++) {
@@ -234,7 +316,9 @@ void display(void *arg) {
             if (!mute[3]) {
             for (x = 96; x < 128; x++) {
                 _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 4) + 32, false);
-                _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))%64, false);
+                if (period[3]) {
+                    _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))%64, false);
+                }
                 volTemp = vol[3]/2;
                 _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
                 for (uint8_t i = 58; i < 64; i++) {
@@ -281,13 +365,13 @@ uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
 int8_t sample1;
 int8_t sample2;
-inline int8_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
+inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
     if (vole <= 0 || freq < 0 || mute[chl]) {
         return 0;
     }
     // 更新通道的数据索引
     data_index_int[chl] = roundf(data_index[chl]);
-    data_index[chl] += (float)freq / SMP_RATE;
+    data_index[chl] += freq / (SMP_RATE<<1);
     // 检查是否启用了循环
     if (isLoop) {
         // 如果启用了循环，则调整索引
@@ -304,7 +388,7 @@ inline int8_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint
         }
     }
     // 处理音频数据并应用音量调整
-    return (int8_t)roundf((int8_t)tracker_data[data_index_int[chl] + smp_start] * vol_table[vole]);
+    return (float)((int8_t)tracker_data[data_index_int[chl] + smp_start] << 5) * vol_table[vole];
 }
 // AUDIO DATA COMP END ------------------------------------------
 
@@ -346,7 +430,7 @@ int8_t ChlPos = 0;
 // bool ChlMenu = false;
 int8_t ChlMenuPos = 0;
 bool windowsClose = true;
-int8_t MenuPos = 0;
+int8_t MenuPos = 2;
 
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
@@ -375,7 +459,66 @@ char* findNote(int frequency) {
     }
     return "???";
 }
-
+char* fileSelet(const char* root_path) {
+    int16_t SelPos = 0;
+    FileInfo* files = NULL;
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    int count = list_directory(root_path, &files);
+    for (;;) {
+        char* showBuf;
+        frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
+        frame.setCursor(0, 11);
+        frame.printf("OPEN FILE IN\n");
+        // frame.setCursor(0, 20);
+        if (count < 0) {
+            frame.printf("Failed to list directory.\n");
+            return "FAIL";
+        }
+        showBuf = shortenFileName(root_path, 12);
+        // shortenFileName(root_path, 12, showBuf);
+        frame.printf("%s: %d FILE/DIR\n", showBuf, count);
+        free(showBuf);
+        frame.fillRect(0, (SelPos*10)+28, 160, 11, 0x528a);
+        frame.drawFastHLine(0, 27, 160, 0xa6bf);
+        frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
+        frame.drawFastVLine(134, 28, 100, 0xa6bf);
+        for (uint16_t i = 0; i < count; i++) {
+            showBuf = shortenFileName(files[i].name, 22);
+            frame.printf("%s", showBuf);
+            frame.setCursor(138, frame.getCursorY());
+            frame.printf("%s\n", files[i].is_directory ? "DIR" : "FIL");
+            frame.setCursor(frame.getCursorX(), frame.getCursorY()+2);
+            free(showBuf);
+        }
+        frame.display();
+        vTaskDelay(2);
+        if (keyUP) {
+            keyUP = false;
+            SelPos--;
+            if (SelPos < 0) {
+                SelPos = count-1;
+            }
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            SelPos++;
+            if (SelPos > count-1) {
+                SelPos = 0;
+            }
+        }
+        if (keyOK) {
+            keyDOWN = false;
+            break;
+        }
+    }
+    char* full_path = (char*)malloc(strlen(files[SelPos].name) + strlen(root_path) + 2);
+    sprintf(full_path, "%s/%s", root_path, files[SelPos].name);
+    for (uint16_t i = 0; i < count; i++) {
+        free(files[i].name);
+    }
+    free(files);
+    return full_path;
+}
 void drawMidRect(uint8_t w, uint8_t h, uint16_t color) {
     frame.drawRect(80-(w>>1), 64-(h>>1), (80+(w>>1))-(80-(w>>1)), (64+(h>>1))-(64-(h>>1)), color);
 }
@@ -415,6 +558,8 @@ uint8_t showTmpEFX2_2;
 
 inline void MainPage() {
     for (;;) {
+        frame.setCursor(0, 10);
+        frame.print(song_name);
         //----------------------MAIN PAGE-------------------------
         frame.setCursor(0, 56);
         if (ChlPos == 0) {
@@ -470,7 +615,7 @@ inline void MainPage() {
         frame.printf("BPM: %d", BPM);
 
         frame.setCursor(1, 29);
-        frame.printf("SPD: %d %d", SPD, part_buffer_point);
+        frame.printf("SPD: %d", SPD);
 
         if (ChlMenuPos) {
             fillMidRect(90, 50, 0x4208);
@@ -541,7 +686,7 @@ inline void MainPage() {
 
         if (windowsClose) {
             windowsClose = false;
-            frame.fillRect(0, 10, 160, 44, ST7735_BLACK);
+            frame.fillRect(0, 32, 160, 22, ST7735_BLACK);
             frame.drawFastHLine(0, 54, 160, ST7735_WHITE);
             frame.drawFastHLine(0, 55, 160, 0xa514);
             frame.drawFastVLine(156, 56, 72, 0x4a51);
@@ -609,13 +754,71 @@ inline void ChlEdit() {
     frame.setCursor(0, 12);
     frame.printf("CHL%d", ChlPos);
     frame.setTextSize(0);
-    frame.setCursor(0, 0);
     frame.drawFastVLine(77, 0, 128, 0x4a51);
     frame.drawFastVLine(78, 0, 128, 0x6b7e);
     frame.drawFastVLine(79, 0, 128, 0xad7f);
+    int8_t EditPos = 0;
+    bool enbRec = false;
     for (;;) {
-        frame.fillRect(80, 0, 80, 128, 0x2945);
+        frame.fillRect(0, 40, 77, 87, ST7735_BLACK);
+        frame.fillRect(0, 40, vol[ChlPos-1], 8, (((vol[ChlPos-1]>>1) << 11) | (clamp(vol[ChlPos-1], 0, 63) << 5) | (vol[ChlPos-1]>>1)));//0x8578);
+        frame.setTextColor(0xef9d);
+        frame.setCursor(0, 49);
+        frame.printf("VOLE:%d\nPROD:%d\nFREQ:%.1f\n", vol[ChlPos-1], period[ChlPos-1], frq[ChlPos-1]);
+        frame.setTextColor(0x8410);
+        frame.printf("SAMP INFO\nNAME:\n%s\nNUM: %d\nLEN: %d\nPAT: %d\nVOL: %d", samp_name[smp_num[ChlPos-1]], smp_num[ChlPos-1], wave_info[smp_num[ChlPos-1]][0], wave_info[smp_num[ChlPos-1]][1], wave_info[smp_num[ChlPos-1]][2]);
+        // frame.fillRect(80, 0, 80, 128, 0x2945);
+        /*
+        for (uint8_t x = 1; x < 5; x++) {
+            if (ChlPos == x) {
+                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0x630c);
+            } else if (mute[x-1]) {
+                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0xa514);
+            } else {
+                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0x2945);
+            }
+        }
+        */
         vTaskDelay(2);
+        // frame.fillRect(80, 55, 80, 9, 0x630c);
+
+        // HIGH LIGHT
+        if (EditPos == 0) {
+            frame.fillRect(80, 0, 13, 128, 0x528a);
+            frame.fillRect(80, 55, 13, 9, 0x7bcf);
+        } else {
+            frame.fillRect(80, 0, 13, 128, 0x2945);
+            frame.fillRect(80, 55, 13, 9, 0x528a);
+        }
+        if (EditPos == 1) {
+            frame.fillRect(96, 0, 23, 128, 0x528a);
+            frame.fillRect(96, 55, 23, 9, 0x7bcf);
+        } else {
+            frame.fillRect(96, 0, 23, 128, 0x2945);
+            frame.fillRect(96, 55, 23, 9, 0x528a);
+        }
+        if (EditPos == 2) {
+            frame.fillRect(119, 0, 18, 128, 0x528a);
+            frame.fillRect(119, 55, 18, 9, 0x7bcf);
+        } else {
+            frame.fillRect(119, 0, 18, 128, 0x2945);
+            frame.fillRect(119, 55, 18, 9, 0x528a);
+        }
+        if (EditPos == 3) {
+            frame.fillRect(137, 0, 9, 128, 0x528a);
+            frame.fillRect(137, 55, 9, 9, 0x7bcf);
+        } else {
+            frame.fillRect(137, 0, 9, 128, 0x2945);
+            frame.fillRect(137, 55, 9, 9, 0x528a);
+        }
+        if (EditPos == 4) {
+            frame.fillRect(146, 0, 13, 128, 0x528a);
+            frame.fillRect(146, 55, 13, 9, 0x7bcf);
+        } else {
+            frame.fillRect(146, 0, 13, 128, 0x2945);
+            frame.fillRect(146, 55, 13, 9, 0x528a);
+        }
+
         frame.setCursor(81, 0);
         for (int8_t i = -7; i < 9; i++) {
             if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
@@ -628,14 +831,14 @@ inline void ChlEdit() {
                 showTmpEFX2_2 = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
                 frame.setCursor(frame.getCursorX()+5, frame.getCursorY());
                 if (showTmpNote) {
-                    frame.setTextColor(0xa51f);
+                    frame.setTextColor(0xcdff);
                     frame.printf("%s ", findNote(showTmpNote));
                 } else {
                     frame.setTextColor(0x52aa);
                     frame.printf("... ");
                 }
                 if (showTmpSamp) {
-                    frame.setTextColor(0x2c2a);
+                    frame.setTextColor(0x97f2);
                     frame.printf("%2d ", showTmpSamp);
                 } else {
                     frame.setTextColor(0x52aa);
@@ -643,9 +846,9 @@ inline void ChlEdit() {
                 }
                 if (showTmpEFX1 || showTmpEFX2_1 || showTmpEFX2_2) {
                     frame.setTextColor(0xfc8f);
-                    frame.printf("%X", showTmpEFX1);
+                    frame.printf("%1X", showTmpEFX1);
                     frame.setTextColor(0xff14);
-                    frame.printf("%X%X", showTmpEFX2_1, showTmpEFX2_2);
+                    frame.printf("%1X%1X", showTmpEFX2_1, showTmpEFX2_2);
                 } else {
                     frame.setTextColor(0x52aa);
                     frame.printf("...");
@@ -675,19 +878,45 @@ inline void ChlEdit() {
             keyDOWN = false;
             tracker_point++;
         }
+        if (keyL) {
+            keyL = false;
+            EditPos--;
+            if (EditPos < 0) {
+                EditPos = 4;
+            }
+        }
+        if (keyR) {
+            keyR = false;
+            EditPos++;
+            if (EditPos > 4) {
+                EditPos = 0;
+            }
+        }
     }
 }
 
 void display_lcd(void *arg) {
-    // hspi.begin(HSPI_SCLK, HSPI_MISO, HSPI_MOSI, HSPI_CS0);
     tft.initR(INITR_BLACKTAB);
+    printf("PASS -1\n");
     tft.setRotation(3);
-    tft.fillScreen(ST7735_BLUE);
+    tft.fillScreen(ST7735_BLACK);
     frame.setTextWrap(true);
+    printf("PASS 0\n");
+    esp_backtrace_print(8);
     frame.setTextSize(1);
+    printf("PASS 0.1\n");
+    esp_backtrace_print(8);
     frame.setTextColor(0x2945);
+    printf("PASS 0.2\n");
+    esp_backtrace_print(8);
+    printf("PASS 0.3\n");
+    esp_backtrace_print(8);
     frame.setCursor(2, 2);
+    printf("PASS 0.4\n");
+    esp_backtrace_print(8);
     frame.print("ESP32Tracker");
+    printf("PASS 0.5\n");
+    esp_backtrace_print(8);
     frame.setTextColor(0x7bcf);
     frame.setCursor(1, 1);
     frame.print("ESP32Tracker");
@@ -698,8 +927,26 @@ void display_lcd(void *arg) {
     frame.print("ESP32Tracker");
     frame.setTextColor(ST7735_WHITE);
     frame.setTextSize(0);
+    printf("PASS 1\n");
     // char cbuf[24];
     lcdOK = false;
+    if (!read_tracker_file(fileSelet("/spiffs"))) {
+        exit(1);
+    }
+    MenuPos = 0;
+    read_pattern_table();
+    read_wave_info();
+    comp_wave_ofst();
+    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
+    printf("PASS 2\n");
+    part_buffer_point = 0;
+    part_point = 1;
+    showPart = 0;
+    loadOk = true;
+    xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 0);
+    printf("PASS 3\n");
+    vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
             MainReDraw();
@@ -714,7 +961,7 @@ void display_lcd(void *arg) {
         vTaskDelay(4);
     }
 }
-
+bool TestNote = false;
 // COMP TASK START ----------------------------------------------
 void comp(void *arg) {
     uint8_t tick_time = 0;
@@ -743,26 +990,12 @@ void comp(void *arg) {
     uint8_t TremoloDepth[4] = {32};
     int VibratoItem[4] = {0};
     uint16_t Mtick = 0;
-    float frq[4] = {0};
     uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
     uint8_t volTemp[4];
     uint16_t OfstCfg[4];
     uint8_t rowLoopStart = 0;
     int8_t rowLoopCont = 0;
     bool enbRowLoop = false;
-    // uint16_t arpLastNote[4] = {0};
-    pwm_audio_config_t pwm_audio_config = {
-        .gpio_num_left = GPIO_NUM_5,
-        .ledc_channel_left = LEDC_CHANNEL_0,
-        .ledc_timer_sel = LEDC_TIMER_0,
-        .duty_resolution = LEDC_TIMER_8_BIT,
-        .ringbuf_len = BUFF_SIZE
-    };
-    printf("PWM AUDIO RETURN %d\n", pwm_audio_init(&pwm_audio_config));
-    pwm_audio_set_param(SMP_RATE, (ledc_timer_bit_t)SMP_BIT, 1);
-    pwm_audio_start();
-    // pwm_audio_set_volume(0);
-    pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
     printf("READ!\n");
     vTaskDelay(128);
     dispRedy = true;
@@ -771,347 +1004,388 @@ void comp(void *arg) {
     // uint8_t RetriggerPos[4] = {1};
     uint8_t RetriggerConfig[4] = {0};
     int16_t audio_temp;
-    while(true) { if (playStat) {
-        // for(uint16_t i = 0; i < BUFF_SIZE; i++) {
-            for(chl = 0; chl < 4; chl++) {
-                if (wave_info[smp_num[chl]][4] > 2) {
-                    buffer_ch[chl][Mtick] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]*2, wave_info[smp_num[chl]][4]*2, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
-                } else {
-                    buffer_ch[chl][Mtick] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
-                }
-            }
-            audio_temp = buffer_ch[0][Mtick]
-                            + buffer_ch[1][Mtick]
-                                + buffer_ch[2][Mtick]
-                                    + buffer_ch[3][Mtick];
-            limit(audio_temp);
-            buffer[Mtick] = (int8_t)clamp((audio_temp / comper), -127, 126);//limit(audio_temp);
-            Mtick++;
-            if (Mtick == TICK_NUL) {
-                pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
-                Mtick = 0;
-                tick_time++;
-                arp_p++;
-                if (tick_time != tick_speed) {
-                    for(chl = 0; chl < 4; chl++) {
-                        // period[chl] += enbSlideDown[chl] ? SlideDown[chl] : (enbSlideUp[chl] ? -SlideUp[chl] : 0);
-                        if (enbSlideUp[chl]) {
-                            // printf("SLIDE UP %d", period[chl]);
-                            period[chl] -= SlideUp[chl];
-                            enbPortTone[chl] = false;
-                            // printf(" - %d = %d\n", SlideUp[chl], period[chl]);
-                        }
-                        if (enbSlideDown[chl]) {
-                            // printf("SLIDE DOWN %d", period[chl]);
-                            period[chl] += SlideDown[chl];
-                            enbPortTone[chl] = false;
-                            // printf(" + %d = %d\n", SlideDown[chl], period[chl]);
-                        }
-                        vol[chl] += (volUp[chl] - volDown[chl]);
-                        vol[chl] = (vol[chl] > 63) ? 63 : (vol[chl] < 1) ? 0 : vol[chl];
-
-                        VibratoItem[chl] = enbVibrato[chl] ? (sine_table[VibratoPos[chl]] * VibratoDepth[chl]) >> 7 : 0;
-                        VibratoPos[chl] = enbVibrato[chl] ? (VibratoPos[chl] + VibratoSpeed[chl]) & 63 : 0;
-
-                        if (enbTremolo[chl]) {
-                            int tremoloValue = (sine_table[TremoloPos[chl]] * TremoloDepth[chl]) >> 7;
-                            vol[chl] += tremoloValue;
-                            vol[chl] = (vol[chl] > 64) ? 64 : (vol[chl] < 1) ? 0 : vol[chl];
-                            TremoloPos[chl] = (TremoloPos[chl] + TremoloSpeed[chl]) & 63;
-                        } else {
-                            TremoloPos[chl] = 0;
-                        }
-
-                        if (enbPortTone[chl]) {
-                            int portToneSpeedValue = portToneSpeed[chl];
-                            if (portToneSource[chl] > portToneTarget[chl]) {
-                                period[chl] -= portToneSpeedValue;
-                                period[chl] = (period[chl] < portToneTarget[chl]) ? portToneTarget[chl] : period[chl];
-                                // printf("SIL %d + %d\n", portToneTemp[chl], portToneSpeed[chl]);
-                            } else if (portToneSource[chl] < portToneTarget[chl]) {
-                                period[chl] += portToneSpeedValue;
-                                period[chl] = (period[chl] > portToneTarget[chl]) ? portToneTarget[chl] : period[chl];
-                                // printf("SID %d - %d\n", portToneTemp[chl], portToneSpeed[chl]);
-                            }
-                            // printf("PORTTONE %d to %d. speeed=%d\n", portToneSource[chl], portToneTarget[chl], portToneSpeed[chl]);
-                        }
+    for(;;) { 
+        if (playStat) {
+            for (;;) {
+                for(chl = 0; chl < 4; chl++) {
+                    if (wave_info[smp_num[chl]][4] > 2) {
+                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]*2, wave_info[smp_num[chl]][4]*2, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
+                    } else {
+                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
                     }
-                } else if (tick_time == tick_speed) {
-                    tick_time = 0;
-                    for (chl = 0; chl < 4; chl++) {
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 13) {
-                            if (part_buffer[part_buffer_point][tracker_point][chl][3] == 0) {
-                                skipToNextPart = true;
-                            }
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 11) {
-                            if (part_buffer[part_buffer_point][tracker_point][chl][3]) {
-                                skipToAnyPart = part_buffer[part_buffer_point][tracker_point][chl][3];
-                            }
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][1]) {
-                            smp_num[chl] = part_buffer[part_buffer_point][tracker_point][chl][1];
-                            vol[chl] = wave_info[smp_num[chl]][2];
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 3
-                                || part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
-                                enbPortTone[chl] = true;
-                                if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
-                                    portToneTarget[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
-                                    portToneSource[chl] = lastNote[chl];
-                                    lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
-                                }
-                                if (enbSlideDown[chl] || enbSlideUp[chl]) {
-                                    portToneSource[chl] = period[chl];
-                                }
-                                // printf("PT TARGET SET TO %d. SOURCE IS %d\n", portToneTarget[chl], portToneSource[chl]);
-                                if ((part_buffer[part_buffer_point][tracker_point][chl][3])
-                                        && (part_buffer[part_buffer_point][tracker_point][chl][2] != 5)) {
-                                    portToneSpeed[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                }
-                            } else {
-                                data_index[chl] = 0;
-                                lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
-                                period[chl] = lastNote[chl];
+                }
+                audio_temp = (int16_t)
+                        roundf(buffer_ch[0][Mtick>>1]
+                                + buffer_ch[1][Mtick>>1]
+                                    + buffer_ch[2][Mtick>>1]
+                                        + buffer_ch[3][Mtick>>1]);
+                // limit(audio_temp);
+                //buffer[Mtick+1] = 0;
+                buffer[Mtick>>1] = audio_temp;
+                Mtick+=2;
+                if (Mtick == (TICK_NUL<<2)) {
+                    // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
+                    i2s_write(I2S_NUM_0, &buffer, Mtick, &wrin, portMAX_DELAY);
+                    Mtick = 0;
+                    tick_time++;
+                    arp_p++;
+                    if (tick_time != tick_speed) {
+                        for(chl = 0; chl < 4; chl++) {
+                            // period[chl] += enbSlideDown[chl] ? SlideDown[chl] : (enbSlideUp[chl] ? -SlideUp[chl] : 0);
+                            if (enbSlideUp[chl]) {
+                                // printf("SLIDE UP %d", period[chl]);
+                                period[chl] -= SlideUp[chl];
                                 enbPortTone[chl] = false;
+                                // printf(" - %d = %d\n", SlideUp[chl], period[chl]);
                             }
-                            if (!(part_buffer[part_buffer_point][tracker_point][chl][2] == 12) 
-                                && part_buffer[part_buffer_point][tracker_point][chl][1]) {
-                                vol[chl] = wave_info[smp_num[chl]][2];
+                            if (enbSlideDown[chl]) {
+                                // printf("SLIDE DOWN %d", period[chl]);
+                                period[chl] += SlideDown[chl];
+                                enbPortTone[chl] = false;
+                                // printf(" + %d = %d\n", SlideDown[chl], period[chl]);
                             }
+                            vol[chl] += (volUp[chl] - volDown[chl]);
+                            vol[chl] = (vol[chl] > 63) ? 63 : (vol[chl] < 1) ? 0 : vol[chl];
+
+                            VibratoItem[chl] = enbVibrato[chl] ? (sine_table[VibratoPos[chl]] * VibratoDepth[chl]) >> 7 : 0;
+                            VibratoPos[chl] = enbVibrato[chl] ? (VibratoPos[chl] + VibratoSpeed[chl]) & 63 : 0;
+
+                            if (enbTremolo[chl]) {
+                                int tremoloValue = (sine_table[TremoloPos[chl]] * TremoloDepth[chl]) >> 7;
+                                vol[chl] += tremoloValue;
+                                vol[chl] = (vol[chl] > 64) ? 64 : (vol[chl] < 1) ? 0 : vol[chl];
+                                TremoloPos[chl] = (TremoloPos[chl] + TremoloSpeed[chl]) & 63;
+                            } else {
+                                TremoloPos[chl] = 0;
+                            }
+
+                            if (enbPortTone[chl]) {
+                                int portToneSpeedValue = portToneSpeed[chl];
+                                if (portToneSource[chl] > portToneTarget[chl]) {
+                                    period[chl] -= portToneSpeedValue;
+                                    period[chl] = (period[chl] < portToneTarget[chl]) ? portToneTarget[chl] : period[chl];
+                                    // printf("SIL %d + %d\n", portToneTemp[chl], portToneSpeed[chl]);
+                                } else if (portToneSource[chl] < portToneTarget[chl]) {
+                                    period[chl] += portToneSpeedValue;
+                                    period[chl] = (period[chl] > portToneTarget[chl]) ? portToneTarget[chl] : period[chl];
+                                    // printf("SID %d - %d\n", portToneTemp[chl], portToneSpeed[chl]);
+                                }
+                                // printf("PORTTONE %d to %d. speeed=%d\n", portToneSource[chl], portToneTarget[chl], portToneSpeed[chl]);
+                            }
+                        }
+                    } else if (tick_time == tick_speed) {
+                        tick_time = 0;
+                        for (chl = 0; chl < 4; chl++) {
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 13) {
+                                if (part_buffer[part_buffer_point][tracker_point][chl][3] == 0) {
+                                    skipToNextPart = true;
+                                }
+                            }
+
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 11) {
+                                if (part_buffer[part_buffer_point][tracker_point][chl][3]) {
+                                    skipToAnyPart = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                }
+                            }
+
                             if (part_buffer[part_buffer_point][tracker_point][chl][1]) {
                                 smp_num[chl] = part_buffer[part_buffer_point][tracker_point][chl][1];
+                                vol[chl] = wave_info[smp_num[chl]][2];
                             }
-                        }
 
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10
-                                || part_buffer[part_buffer_point][tracker_point][chl][2] == 6
+                            if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
+                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 3
                                     || part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10) {
-                                enbPortTone[chl] = false;
+                                    enbPortTone[chl] = true;
+                                    if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
+                                        portToneTarget[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                        portToneSource[chl] = lastNote[chl];
+                                        lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                    }
+                                    if (enbSlideDown[chl] || enbSlideUp[chl]) {
+                                        portToneSource[chl] = period[chl];
+                                    }
+                                    // printf("PT TARGET SET TO %d. SOURCE IS %d\n", portToneTarget[chl], portToneSource[chl]);
+                                    if ((part_buffer[part_buffer_point][tracker_point][chl][3])
+                                            && (part_buffer[part_buffer_point][tracker_point][chl][2] != 5)) {
+                                        portToneSpeed[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    }
+                                } else {
+                                    data_index[chl] = 0;
+                                    lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                    period[chl] = lastNote[chl];
+                                    enbPortTone[chl] = false;
+                                }
+                                if (!(part_buffer[part_buffer_point][tracker_point][chl][2] == 12) 
+                                    && part_buffer[part_buffer_point][tracker_point][chl][1]) {
+                                    vol[chl] = wave_info[smp_num[chl]][2];
+                                }
+                                if (part_buffer[part_buffer_point][tracker_point][chl][1]) {
+                                    smp_num[chl] = part_buffer[part_buffer_point][tracker_point][chl][1];
+                                }
                             }
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
-                                enbPortTone[chl] = true;
+
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10
+                                    || part_buffer[part_buffer_point][tracker_point][chl][2] == 6
+                                        || part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
+                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10) {
+                                    enbPortTone[chl] = false;
+                                }
+                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
+                                    enbPortTone[chl] = true;
+                                }
+                                hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &volUp[chl], &volDown[chl]);
+                                // printf("VOL+=%d -=%d\n", volUp[chl], volDown[chl]);
+                            } else {
+                                volUp[chl] = volDown[chl] = 0;
                             }
-                            hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &volUp[chl], &volDown[chl]);
-                            // printf("VOL+=%d -=%d\n", volUp[chl], volDown[chl]);
-                        } else {
-                            volUp[chl] = volDown[chl] = 0;
-                        }
 
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 1) {
-                            SlideUp[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                            // printf("SET SLIDEUP IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
-                            enbSlideUp[chl] = true;
-                        } else {
-                            enbSlideUp[chl] = false;
-                        }
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 1) {
+                                SlideUp[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                // printf("SET SLIDEUP IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                enbSlideUp[chl] = true;
+                            } else {
+                                enbSlideUp[chl] = false;
+                            }
 
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 2) {
-                            SlideDown[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                            // printf("SET SLIDEDOWN IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
-                            enbSlideDown[chl] = true;
-                        } else {
-                            enbSlideDown[chl] = false;
-                        }
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 2) {
+                                SlideDown[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                // printf("SET SLIDEDOWN IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                enbSlideDown[chl] = true;
+                            } else {
+                                enbSlideDown[chl] = false;
+                            }
 
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 4
-                                || part_buffer[part_buffer_point][tracker_point][chl][2] == 6) {
-                            enbVibrato[chl] = true;
-                            if ((part_buffer[part_buffer_point][tracker_point][chl][2] == 4)) {
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 4
+                                    || part_buffer[part_buffer_point][tracker_point][chl][2] == 6) {
+                                enbVibrato[chl] = true;
+                                if ((part_buffer[part_buffer_point][tracker_point][chl][2] == 4)) {
+                                    if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
+                                        VibratoSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    }
+                                    if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
+                                        VibratoDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    }
+                                    // printf("VIBRATO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
+                                }
+                            } else {
+                                enbVibrato[chl] = false;
+                            }
+
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 7) {
+                                enbVibrato[chl] = true;
                                 if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                    VibratoSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    TremoloSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
                                 }
                                 if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                    VibratoDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    TremoloDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
                                 }
-                                // printf("VIBRATO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
-                            }
-                        } else {
-                            enbVibrato[chl] = false;
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 7) {
-                            enbVibrato[chl] = true;
-                            if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                TremoloSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                            }
-                            if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                TremoloDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                            }
-                            // printf("TREMOLO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
-                        } else {
-                            enbTremolo[chl] = false;
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 9) {
-                            OfstCfg[chl] = part_buffer[part_buffer_point][tracker_point][chl][3] << 8;
-                            // printf("SMP OFST %d\n", OfstCfg[chl]);
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 12) {
-                            vol[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                            enbPortTone[chl] = false;
-                        }
-                        enbRetrigger[chl] = false;
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 14) {
-                            uint8_t decimalTens = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                            vol[chl] += (decimalTens == 10) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 11) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
-                            vol[chl] = (vol[chl] > 64) ? 64 : ((vol[chl] < 1) ? 0 : vol[chl]);
-                            period[chl] += (decimalTens == 2) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 1) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
-                            if (decimalTens == 9) {
-                                enbRetrigger[chl] = true;
-                                RetriggerConfig[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                                // printf("RETRIGGER %d\n", RetriggerConfig[chl]);
-                                volTemp[chl] = vol[chl];
-                            } else if (decimalTens == 6) {
-                                if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) == 0) {
-                                    rowLoopStart = tracker_point;
-                                    // printf("SET LOOP START %d\n", rowLoopStart);
-                                } else {
-                                    if (rowLoopCont == 0) {
-                                        rowLoopCont = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                                        // printf("SET LOOP CONT %d\n", rowLoopCont);
-                                    } else {
-                                        rowLoopCont--;
-                                        // printf("LOOP CONT - 1 %d\n", rowLoopCont);
-                                    }
-                                    if (rowLoopCont > 0) {
-                                        // printf("ROWLOOP %d\n", rowLoopCont);
-                                        enbRowLoop = true;
-                                    }
-                                }
-                            }
-                            // printf("LINE VOL %s TO %d\n", (decimalTens == 10) ? "UP" : ((decimalTens == 11) ? "DOWN" : "UNCHANGED"), vol[chl]);
-                        }
-
-                        if (part_buffer[part_buffer_point][tracker_point][chl][2] == 15) {
-                            if (part_buffer[part_buffer_point][tracker_point][chl][3] < 32) {
-                                tick_speed = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                SPD = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                // printf("SPD SET TO %d\n", tick_speed);
+                                // printf("TREMOLO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
                             } else {
-                                TICK_NUL = roundf(SMP_RATE / (part_buffer[part_buffer_point][tracker_point][chl][3] * 0.4));
-                                BPM = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                // printf("MTICK SET TO %d\n", TICK_NUL);
+                                enbTremolo[chl] = false;
                             }
-                        }
 
-                        if ((!part_buffer[part_buffer_point][tracker_point][chl][2])
-                                && part_buffer[part_buffer_point][tracker_point][chl][3]) {
-                            arp_p = 0;
-                            hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &arpNote[0][chl], &arpNote[1][chl]);
-                            arpFreq[0][chl] = patch_table[wave_info[smp_num[chl]][1]] / period[chl];
-                            arpFreq[1][chl] = freq_up(arpFreq[0][chl], arpNote[0][chl]);
-                            arpFreq[2][chl] = freq_up(arpFreq[0][chl], arpNote[1][chl]);
-                            // printf("ARP CTRL %d %d %f %f %f\n", arpNote[0][chl], arpNote[1][chl], arpFreq[0][chl], arpFreq[1][chl], arpFreq[2][chl]);
-                            enbArp[chl] = true;
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 9) {
+                                OfstCfg[chl] = part_buffer[part_buffer_point][tracker_point][chl][3] << 8;
+                                // printf("SMP OFST %d\n", OfstCfg[chl]);
+                            }
+
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 12) {
+                                vol[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                enbPortTone[chl] = false;
+                            }
+                            enbRetrigger[chl] = false;
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 14) {
+                                uint8_t decimalTens = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                vol[chl] += (decimalTens == 10) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 11) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
+                                vol[chl] = (vol[chl] > 64) ? 64 : ((vol[chl] < 1) ? 0 : vol[chl]);
+                                period[chl] += (decimalTens == 2) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 1) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
+                                if (decimalTens == 9) {
+                                    enbRetrigger[chl] = true;
+                                    RetriggerConfig[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    // printf("RETRIGGER %d\n", RetriggerConfig[chl]);
+                                    volTemp[chl] = vol[chl];
+                                } else if (decimalTens == 6) {
+                                    if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) == 0) {
+                                        rowLoopStart = tracker_point;
+                                        // printf("SET LOOP START %d\n", rowLoopStart);
+                                    } else {
+                                        if (rowLoopCont == 0) {
+                                            rowLoopCont = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                            // printf("SET LOOP CONT %d\n", rowLoopCont);
+                                        } else {
+                                            rowLoopCont--;
+                                            // printf("LOOP CONT - 1 %d\n", rowLoopCont);
+                                        }
+                                        if (rowLoopCont > 0) {
+                                            // printf("ROWLOOP %d\n", rowLoopCont);
+                                            enbRowLoop = true;
+                                        }
+                                    }
+                                }
+                                // printf("LINE VOL %s TO %d\n", (decimalTens == 10) ? "UP" : ((decimalTens == 11) ? "DOWN" : "UNCHANGED"), vol[chl]);
+                            }
+
+                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 15) {
+                                if (part_buffer[part_buffer_point][tracker_point][chl][3] < 32) {
+                                    tick_speed = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    SPD = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    // printf("SPD SET TO %d\n", tick_speed);
+                                } else {
+                                    TICK_NUL = roundf(SMP_RATE / (part_buffer[part_buffer_point][tracker_point][chl][3] * 0.4));
+                                    BPM = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    // printf("MTICK SET TO %d\n", TICK_NUL);
+                                }
+                            }
+
+                            if ((!part_buffer[part_buffer_point][tracker_point][chl][2])
+                                    && part_buffer[part_buffer_point][tracker_point][chl][3]) {
+                                arp_p = 0;
+                                hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &arpNote[0][chl], &arpNote[1][chl]);
+                                arpFreq[0][chl] = patch_table[wave_info[smp_num[chl]][1]] / period[chl];
+                                arpFreq[1][chl] = freq_up(arpFreq[0][chl], arpNote[0][chl]);
+                                arpFreq[2][chl] = freq_up(arpFreq[0][chl], arpNote[1][chl]);
+                                // printf("ARP CTRL %d %d %f %f %f\n", arpNote[0][chl], arpNote[1][chl], arpFreq[0][chl], arpFreq[1][chl], arpFreq[2][chl]);
+                                enbArp[chl] = true;
+                            } else {
+                                if (enbArp[chl]) {
+                                    frq[chl] = arpFreq[0][chl];
+                                    enbArp[chl] = false;
+                                }
+                            }
+                            //if (chl == 3) {
+                            //printf("PART=%d CHL=%d PINT=%d SPED=%d VOLE=%d VOL_F=%f FREQ=%f EFX1=%d EFX2=%d NOTE=%d SMPL=%d\n",
+                            //    part_point, chl, tracker_point, tick_speed, vol[chl], vol_table[vol[chl]], frq[chl], part_buffer[part_buffer_point][tracker_point][chl][2], part_buffer[part_buffer_point][tracker_point][chl][3], part_buffer[part_buffer_point][tracker_point][chl][0], smp_num[chl]);
+                            //}
+                        }
+                        tracker_point++;
+                        if (enbRowLoop) {
+                            tracker_point = rowLoopStart;
+                            enbRowLoop = false;
+                            printf("SKIP TO %d\n", rowLoopStart);
+                        }
+                        if ((tracker_point > 63) || skipToNextPart || skipToAnyPart) {
+                            tracker_point = 0;
+                            showPart++;
+                            if (showPart >= NUM_PATTERNS) {
+                                showPart = 0;
+                            }
+                            if (skipToAnyPart) {
+                                part_point = showPart = skipToAnyPart;
+                                printf("SKIP TO %d\n", part_point);
+                                skipToAnyPart = false;
+                                read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
+                                part_point++;
+                            }
+                            printf("%d\n", part_buffer_point);
+                            skipToNextPart = false;
+                            part_buffer_point = !part_buffer_point;
+                            loadOk = true;
+                        }
+                    }
+                    for (chl = 0; chl < 4; chl++) {
+                        if (period[chl] != 0) {
+                            frq[chl] = patch_table[wave_info[smp_num[chl]][1]] / (float)(period[chl] + VibratoItem[chl]);
                         } else {
-                            if (enbArp[chl]) {
-                                frq[chl] = arpFreq[0][chl];
-                                enbArp[chl] = false;
+                            frq[chl] = 0;
+                        }
+                        if (enbRetrigger[chl]) {
+                            // printf("RETPOS %d\n", RetriggerPos[chl]);
+                            // if (RetriggerPos[chl] > RetriggerConfig[chl]) {
+                            if (!(tick_time % RetriggerConfig[chl])) {
+                                // printf("EXEC RET %d\n", RetriggerPos[chl]);
+                                data_index[chl] = 0;
+                                vol[chl] = volTemp[chl];
                             }
                         }
-                        //if (chl == 3) {
-                        //printf("PART=%d CHL=%d PINT=%d SPED=%d VOLE=%d VOL_F=%f FREQ=%f EFX1=%d EFX2=%d NOTE=%d SMPL=%d\n",
-                        //    part_point, chl, tracker_point, tick_speed, vol[chl], vol_table[vol[chl]], frq[chl], part_buffer[part_buffer_point][tracker_point][chl][2], part_buffer[part_buffer_point][tracker_point][chl][3], part_buffer[part_buffer_point][tracker_point][chl][0], smp_num[chl]);
-                        //}
-                    }
-                    tracker_point++;
-                    if (enbRowLoop) {
-                        tracker_point = rowLoopStart;
-                        enbRowLoop = false;
-                        printf("SKIP TO %d\n", rowLoopStart);
-                    }
-                    if ((tracker_point > 63) || skipToNextPart || skipToAnyPart) {
-                        tracker_point = 0;
-                        showPart++;
-                        if (showPart >= NUM_PATTERNS) {
-                            showPart = 0;
+                        if (OfstCfg[chl]) {
+                            data_index[chl] = OfstCfg[chl];
+                            OfstCfg[chl] = 0;
                         }
-                        if (skipToAnyPart) {
-                            part_point = showPart = skipToAnyPart;
-                            printf("SKIP TO %d\n", part_point);
-                            skipToAnyPart = false;
-                            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
-                            part_point++;
+                        if (arp_p > 2) {arp_p = 0;}
+                        if (enbArp[chl]) {
+                            frq[chl] = arpFreq[arp_p][chl];
                         }
-                        printf("%d\n", part_buffer_point);
-                        skipToNextPart = false;
-                        part_buffer_point = !part_buffer_point;
-                        loadOk = true;
                     }
+                    vTaskDelay(1);
                 }
-                for (chl = 0; chl < 4; chl++) {
-                    if (period[chl] != 0) {
-                        frq[chl] = patch_table[wave_info[smp_num[chl]][1]] / (period[chl] + VibratoItem[chl]);
-                    } else {
-                        frq[chl] = 0;
+                if (!playStat) {
+                    for (uint8_t s = 0; s < 4; s++) {
+                        vol[s] = 0;
+                        period[s] = 0;
+                        frq[s] = 0;
                     }
-                    if (enbRetrigger[chl]) {
-                        // printf("RETPOS %d\n", RetriggerPos[chl]);
-                        // if (RetriggerPos[chl] > RetriggerConfig[chl]) {
-                        if (!(tick_time % RetriggerConfig[chl])) {
-                            // printf("EXEC RET %d\n", RetriggerPos[chl]);
-                            data_index[chl] = 0;
-                            vol[chl] = volTemp[chl];
-                        }
-                    }
-                    if (OfstCfg[chl]) {
-                        data_index[chl] = OfstCfg[chl];
-                        OfstCfg[chl] = 0;
-                    }
-                    if (arp_p > 2) {arp_p = 0;}
-                    if (enbArp[chl]) {
-                        frq[chl] = arpFreq[arp_p][chl];
-                    }
+                    vTaskDelay(1);
+                    break;
                 }
-                vTaskDelay(1);
             }
-            if (!playStat) {
-                memset(&buffer, 0, BUFF_SIZE);
-                memset(&buffer_ch[0], 0, BUFF_SIZE);
-                memset(&buffer_ch[1], 0, BUFF_SIZE);
-                memset(&buffer_ch[2], 0, BUFF_SIZE);
-                memset(&buffer_ch[3], 0, BUFF_SIZE);
-                vTaskDelay(32);
-                pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
-                vTaskDelay(1);
+        } else {
+            loadOk = false;
+            for (uint16_t i = 0; i < BUFF_SIZE; i++) {
+                if (wave_info[smp_num[0]][4] > 2) {
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]*2, wave_info[smp_num[0]][4]*2, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0]);
+                } else {
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0]);
+                }
+                buffer[i] = (int16_t)roundf(buffer_ch[0][i]) >> 1;
             }
-        // apply_delay(&buffer, BUFF_SIZE);
-        // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
-        // printf("pwm wrin %d\n", wrin);
-        //ESP_LOGI("STEP_SIZE", "%d %d", wrin, BUFF_SIZE);
-    } else {
-        loadOk = false;
-        if (tracker_point > 63) {
-            tracker_point = 0;
-            showPart++;
-            if (showPart >= NUM_PATTERNS) {
-                showPart = 0;
+            if (TestNote) {
+                TestNote = false;
+                if (period[0]) {
+                    printf("TEST CHL0 OFF\n");
+                    data_index[0] = 0;
+                    period[0] = 0;
+                    vol[0] = 0;
+                } else {
+                    printf("TEST CHL0 428\n");
+                    data_index[0] = 0;
+                    period[0] = 428;
+                    vol[0] = 64;
+                }
             }
-            printf("SKIP TO %d\n", part_point);
-            read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
-            printf("%d\n", part_buffer_point);
-            loadOk = true;
+            if (tracker_point > 63) {
+                tracker_point = 0;
+                showPart++;
+                if (showPart >= NUM_PATTERNS) {
+                    showPart = 0;
+                }
+                printf("SKIP TO %d\n", part_point);
+                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
+                read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
+                printf("%d\n", part_buffer_point);
+                // part_buffer_point = !part_buffer_point;
+                part_point++;
+                // part_point = showPart+1;
+                // loadOk = true;
+            }
+            if (tracker_point < 0) {
+                tracker_point = 63;
+                showPart--;
+                if (showPart < 0) {
+                    showPart = NUM_PATTERNS;
+                }
+                printf("SKIP TO %d\n", part_point);
+                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
+                read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
+                printf("%d\n", part_buffer_point);
+                // part_buffer_point = !part_buffer_point;
+                part_point--;
+                // part_point = showPart+1;
+                // loadOk = true;
+            }
+            if (playStat) {
+                for (uint8_t s = 0; s < 4; s++) {
+                    vol[s] = 0;
+                    period[s] = 0;
+                    frq[s] = 0;
+                }
+            }
+            frq[0] = patch_table[wave_info[smp_num[0]][1]] / period[0];
+            // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
+            i2s_write((i2s_port_t)0, &buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
+            vTaskDelay(4);
         }
-        if (tracker_point < 0) {
-            tracker_point = 63;
-            showPart--;
-            if (showPart < 0) {
-                showPart = NUM_PATTERNS;
-            }
-            printf("SKIP TO %d\n", part_point);
-            read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
-            printf("%d\n", part_buffer_point);
-            loadOk = true;
-        }
-        vTaskDelay(64);
-    }}
+    }
 }
 // COMP TASK END ------------------------------------------------
 FILE *f;
@@ -1139,6 +1413,9 @@ void load(void *arg) {
 }
 
 void read_pattern_table() {
+    for (uint8_t p = 0; p < 20; p++) {
+        song_name[p] = tracker_data[p];
+    }
     NUM_PATTERNS = tracker_data[950];
     for (uint8_t i = 0; i < NUM_PATTERNS; i++) {
         part_table[i] = tracker_data[952 + i];
@@ -1163,12 +1440,15 @@ int find_max(int size) {
 void read_wave_info() {
     for (uint8_t i = 1; i < 33; i++) {
         uint8_t* sample_data = (uint8_t*)tracker_data + 20 + (i - 1) * 30;
+        for (uint8_t p = 0; p < 22; p++) {
+            samp_name[i][p] = sample_data[p];
+        }
         wave_info[i][0] = ((sample_data[22] << 8) | sample_data[23]) * 2;  // 采样长度
         wave_info[i][1] = sample_data[24];  // 微调值
         wave_info[i][2] = sample_data[25];  // 音量
         wave_info[i][3] = (sample_data[26] << 8) | sample_data[27];  // 重复点
         wave_info[i][4] = (sample_data[28] << 8) | sample_data[29];  // 重复长度
-        ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3], wave_info[i][4], find_max(NUM_PATTERNS)+1);
+        // ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3], wave_info[i][4], find_max(NUM_PATTERNS)+1);
     }
 }
 
@@ -1183,7 +1463,7 @@ void comp_wave_ofst() {
     }
 */
     for (uint8_t i = 1; i < 33; i++) {
-        printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
+        // printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
         wav_ofst[i+1] += (wav_ofst[i] + wave_info[i][0]);
     }
 }
@@ -1202,6 +1482,9 @@ void read_wave_data(uint8_t (*wave_info)[5], uint8_t* tracker_data, uint8_t** wa
     }
 }
 */
+
+#define TAG "TAG"
+const char* root_path = "/spiffs";
 
 void input(void *arg) {
     Serial.begin(115200);
@@ -1233,35 +1516,113 @@ void input(void *arg) {
                 keyOK = true;
                 printf("PLS OK\n");
             }
+            if (received == 49) {
+                printf("INPUT SAMP NUM:\n");
+                for (;;) {
+                    if (Serial.available() > 0) {
+                        uint16_t received = Serial.read();
+                        smp_num[0] = received - 48;
+                        printf("CHL0's SMP_NUM=%d NAME:%s\n", smp_num[0], samp_name[smp_num[0]]);
+                        break;
+                    }
+                    vTaskDelay(8);
+                }
+            }
+            if (received == 50) {
+                TestNote = true;
+            }
+            if (received == 112) {
+                printf("FREE MEM: %d\n", esp_get_free_heap_size());
+                vTaskPrioritySet(NULL, 5);
+                FileInfo* files = NULL;
+                int count = list_directory(root_path, &files);
+                if (count < 0) {
+                    printf("Failed to list directory.\n");
+                }
+
+                printf("Total files and directories: %d\n", count);
+                for (int i = 0; i < count; i++) {
+                    printf("%s - %s\n", files[i].name, files[i].is_directory ? "Directory" : "File");
+                    free(files[i].name);
+                }
+                free(files);
+                vTaskPrioritySet(NULL, 2);
+            }
             Serial.flush();
         }
         vTaskDelay(6);
     }
 }
 
-#define PIN_NUM_MOSI 13
-#define PIN_NUM_MISO 32
-#define PIN_NUM_CLK 14
-#define PIN_NUM_CS (gpio_num_t)15
-
 void setup()
 {
-    read_pattern_table();
-    read_wave_info();
-    comp_wave_ofst();
-    uint8_t rows = 32;
-    uint16_t dlen;
-    // 分配每行的空间
-    /*
-    for (int i = 0; i < rows; i++) {
-        dlen = wave_info[i+1][0];
-        wave_data[i] = (int8_t *)malloc(dlen * sizeof(int8_t));
-        if (wave_data[i] == NULL) {
-            printf("内存分配失败！%d %d\n", i, dlen);
-            // exit(1);
+    //xTaskCreate(&display, "wave_view", 7000, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
+    // INIT SPIFFS
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = "ffat",
+        .max_files = 5,
+        .format_if_mount_failed = true
+    };
+    printf("esp_err_t ret = esp_vfs_spiffs_register(&conf);\n");
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            printf("Failed to mount or format filesystem\n");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            printf("Failed to find SPIFFS partition\n");
+        } else {
+            printf("Failed to initialize SPIFFS (%s)\n", esp_err_to_name(ret));
         }
+        return;
     }
+    vTaskDelay(16);
+    //I2S.setPin(35, 36, 0, 37, -1);
+    static const int i2s_num = 0; // i2s port number
+
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = 44100,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 8,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0
+    };
+
+    static const i2s_pin_config_t pin_config = {
+        .bck_io_num = 42,
+        .ws_io_num = 40,
+        .data_out_num = 41,
+        .data_in_num = I2S_PIN_NO_CHANGE
+    };
+
+    printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
+    printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
+    i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
+    i2s_zero_dma_buffer(I2S_NUM_0);
+    new_tracker_file();
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
+    /*
+    pwm_audio_config_t pwm_audio_config = {
+        .gpio_num_left = GPIO_NUM_5,
+        .ledc_channel_left = LEDC_CHANNEL_0,
+        .ledc_timer_sel = LEDC_TIMER_0,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .ringbuf_len = BUFF_SIZE
+    };
+    printf("PWM AUDIO RETURN %d\n", pwm_audio_init(&pwm_audio_config));
+    pwm_audio_set_param(SMP_RATE, (ledc_timer_bit_t)SMP_BIT, 1);
+    pwm_audio_start();
+    // pwm_audio_set_volume(0);
+    pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, portMAX_DELAY);
     */
+    /*
     esp_err_t ret;
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
@@ -1271,12 +1632,11 @@ void setup()
     sdmmc_card_t *card;
     const char mount_point[] = "/sdcard";
     printf("Initializing SD card...\n");
-    /*
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .sclk_io_num = PIN_NUM_CLK,
+        .mosi_io_num = GPIO_NUM_40,
+        .miso_io_num = GPIO_NUM_38,
+        .sclk_io_num = GPIO_NUM_39,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
@@ -1288,7 +1648,7 @@ void setup()
         printf("Card Mount OK");
     }
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = PIN_NUM_CS;
+    slot_config.gpio_cs = GPIO_NUM_35;
     slot_config.host_id = (spi_host_device_t)host.slot;
     ESP_LOGI(TAG, "Mounting filesystem");
     ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
@@ -1305,32 +1665,8 @@ void setup()
     ESP_LOGI(TAG, "Filesystem mounted");
     sdmmc_card_print_info(stdout, card);
     */
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
-    xTaskCreate(&display, "wave_view", 7000, NULL, 5, NULL);
     // xTaskCreatePinnedToCore(&Cpu_task, "cpu_task", 4096, NULL, 0, NULL, 0);
-/*
-    for (int i = 0; i < NUM_PATTERNS; i++) {
-        uint8_t* pattern_data = tracker_data + 1084 + i * PATTERN_SIZE;
-        decode_pattern_data(pattern_data, part_data);
-    }
-*/
-    // read_wave_data(wave_info, tracker_data, wave_data);
-//    for (int i = 0; i <= 100; i++) {
-//        midi_notes[i] = midi_note_frequency(i);
-//    }
-    for (uint8_t i = 1; i < 33; i++) {
-        ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3]*2, (wave_info[i][3]*2)+(wave_info[i][4]*2), find_max(NUM_PATTERNS)+1);
-    }
-    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-    // while(lcdOK) {
-    //     vTaskDelay(4);
-    // }
-    vTaskDelay(512);
     printf("MAIN EXIT\n");
-    xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, NULL, 0);
-    // xTaskCreate(&comp, "Play", 9000, NULL, 5, NULL);
-    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 0);
 }
 /*
 void loop() {

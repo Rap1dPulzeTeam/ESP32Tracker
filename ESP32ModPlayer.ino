@@ -40,12 +40,12 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
-    uint16_t *buffer;
+    uint16_t lcd_buffer[40960];
     aFrameBuffer(int16_t w, int16_t h): Adafruit_GFX(w, h)
     {
-      buffer = (uint16_t*)malloc(2 * h * w);
+      // lcd_buffer = (uint16_t*)malloc(2 * h * w);
       for (int i = 0; i < h * w; i++)
-        buffer[i] = 0;
+        lcd_buffer[i] = 0;
     }
     void drawPixel( int16_t x, int16_t y, uint16_t color)
     {
@@ -57,7 +57,7 @@ class  aFrameBuffer : public Adafruit_GFX {
         return;
       if (y < 0)
         return;
-      buffer[x + y * _width] = color;
+      lcd_buffer[x + y * _width] = color;
     }
 
     void display()
@@ -65,10 +65,10 @@ class  aFrameBuffer : public Adafruit_GFX {
       tft.setAddrWindow(0, 0, 160, 128);
       digitalWrite(TFT_DC, HIGH);
       digitalWrite(TFT_CS, LOW);
-      SPI.beginTransaction(SPISettings(70000000, MSBFIRST, SPI_MODE1));
+      SPI.beginTransaction(SPISettings(78000000, MSBFIRST, SPI_MODE0));
       for (uint16_t i = 0; i < 160 * 128; i++)
       {
-        SPI.transfer16(buffer[i]);
+        SPI.transfer16(lcd_buffer[i]);
       }
       SPI.endTransaction();
       digitalWrite(TFT_CS, HIGH);
@@ -80,8 +80,8 @@ aFrameBuffer frame(160, 128);
 #define BUFF_SIZE 2048
 #define SMP_RATE 44100
 #define SMP_BIT 8
-float buffer_ch[4][BUFF_SIZE];
-int16_t buffer[BUFF_SIZE<<1];
+float buffer_ch[4][6892];
+int16_t buffer[6892];
 float time_step = 1.0 / SMP_RATE;
 
 size_t wrin;
@@ -97,7 +97,7 @@ uint8_t NUM_PATTERNS;
 #define PATTERN_SIZE (NUM_ROWS * NUM_CHANNELS * 4)
 
 uint8_t part_table[128];
-uint8_t part_point = 1;
+int8_t part_point = 2;
 int8_t tracker_point = 0;
 char song_name[20];
 char samp_name[33][22];
@@ -165,7 +165,7 @@ uint8_t* read_file(const char* path, long* file_size) {
     fseek(file, 0, SEEK_SET);
 
     // 动态分配内存来存储文件内容
-    uint8_t* buffer = (uint8_t*)malloc(*file_size);
+    uint8_t* buffer = (uint8_t*)realloc(buffer, *file_size);
     if (!buffer) {
         printf("Failed to allocate memory\n");
         fclose(file);
@@ -187,8 +187,9 @@ uint8_t* read_file(const char* path, long* file_size) {
 
 long read_tracker_file(const char* path) {
     printf("NOW READ FILE %s\n", path);
-    free(tracker_data);
+    // free(tracker_data);
     long file_size;
+    free(tracker_data);
     tracker_data = read_file(path, &file_size);
     if ((tracker_data == NULL) || (file_size == 0)) {
         printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, file_size);
@@ -209,8 +210,9 @@ long read_tracker_file(const char* path) {
 }
 
 bool new_tracker_file() {
-    free(tracker_data);
-    tracker_data = (uint8_t *)malloc(2108);
+    // free(tracker_data);
+    // tracker_data = (uint8_t *)malloc(2108);
+    tracker_data = (uint8_t *)realloc(tracker_data, 2108);
     if (tracker_data == NULL) {
         printf("CREATE NEW FILE ON MEM FAILED!\n");
         return 1;
@@ -221,6 +223,8 @@ bool new_tracker_file() {
     printf("CREATE NEW FILE ON MEM FINISH!\n");
     return 0;
 }
+void comp(void *arg);
+void load(void *arg);
 // **************************INIT*END****************************
 
 char ten[24];
@@ -233,8 +237,8 @@ uint8_t smp_num[CHL_NUM] = {0};
 
 int16_t temp;
 uint16_t wave_info[33][5];
-uint32_t wav_ofst[32];
-uint8_t showPart = 0;
+uint32_t wav_ofst[34];
+int8_t showPart = 0;
 bool mute[4] = {false};
 
 // OSC START -----------------------------------------------------
@@ -377,8 +381,9 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     if (isLoop) {
         // 如果启用了循环，则调整索引
         if (data_index_int[chl] >= (loopStart + loopLen)) {
-            data_index[chl] = data_index[chl] - data_index_int[chl];
+            // data_index[chl] = data_index[chl] - data_index_int[chl];
             data_index[chl] = loopStart;
+            data_index_int[chl] = loopStart;
         }
     } else {
         // 检查是否到达了样本的末尾
@@ -432,6 +437,8 @@ int8_t ChlPos = 0;
 int8_t ChlMenuPos = 0;
 bool windowsClose = true;
 int8_t MenuPos = 2;
+TaskHandle_t COMP;
+TaskHandle_t LOAD;
 
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
@@ -515,7 +522,7 @@ char* fileSelet(const char* root_path) {
             }
         }
         if (keyOK) {
-            keyDOWN = false;
+            keyOK = false;
             break;
         }
     }
@@ -557,9 +564,7 @@ inline void MainReDraw() {
     frame.print("ESP32Tracker");
     frame.setTextColor(0x7bcf);
     frame.setCursor(1, 1);
-    frame.print("ESP32Tracker");
-    frame.setCursor(100, 0);
-    frame.print("libchara");
+    frame.print("ESP32Tracker      libchara");
     frame.setTextColor(ST7735_WHITE);
     frame.setCursor(0, 0);
     frame.print("ESP32Tracker");
@@ -573,13 +578,96 @@ uint8_t showTmpEFX1;
 uint8_t showTmpEFX2_1;
 uint8_t showTmpEFX2_2;
 
-inline void MainPage() {
+inline void fileOpt() {
+    for (;;) {
+        long ret = read_tracker_file(fileSelet("/spiffs"));
+        if (ret == -1) {
+            frame.fillRect(0, 0, 160, 128, ST7735_BLACK);
+            frame.setTextSize(3);
+            frame.setTextColor(0xf986);
+            frame.setCursor(4, 8);
+            frame.printf("!");
+            frame.setTextColor(ST7735_WHITE);
+            frame.setTextSize(0);
+            frame.setCursor(10, 40);
+            frame.printf("LOAD ERROR!\n");
+            frame.setCursor(10, frame.getCursorY());
+            frame.printf("THIS IS\n");
+            frame.setCursor(10, frame.getCursorY());
+            frame.setTextColor(0xf986);
+            frame.setTextSize(2);
+            frame.printf("NOT\n");
+            frame.setTextSize(0);
+            frame.setTextColor(ST7735_WHITE);
+            frame.setCursor(10, frame.getCursorY());
+            frame.printf("A MOD FILE!\n");
+            frame.setCursor(10, frame.getCursorY());
+            frame.display();
+            while(!keyOK) {
+                vTaskDelay(4);
+            }
+            keyOK = false;
+            MainReDraw();
+        } else {
+            break;
+        }
+    }
+}
+
+void MainPage() {
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+    frame.fillRect(0, 10, 160, 8, 0x2104);
+    uint8_t sideMenu = 0;
+    uint8_t fileMenu = 0;
     for (;;) {
         frame.setCursor(0, 10);
         frame.print(song_name);
+        if (windowsClose) {
+            windowsClose = false;
+            frame.fillRect(0, 32, 160, 22, ST7735_BLACK);
+
+            // SIDE MENU
+            frame.drawFastHLine(0, 40, 112, 0xe71c);
+            frame.drawFastVLine(37, 40, 15, 0xe71c);
+            frame.drawFastVLine(74, 40, 15, 0xe71c);
+            frame.drawFastVLine(0, 40, 15, 0xe71c);
+            frame.drawFastVLine(111, 40, 15, 0xe71c);
+
+            // TRACKER LINE
+            frame.drawFastHLine(0, 54, 160, ST7735_WHITE);
+
+            // PAT VIEW LINE
+            frame.drawFastVLine(112, 19, 35, ST7735_WHITE);
+
+            // TRACKER CHL LINE
+            frame.drawFastHLine(0, 55, 160, 0xa514);
+            frame.drawFastVLine(156, 56, 72, 0x4a51);
+            frame.drawFastVLine(157, 56, 72, 0x6b7e);
+            frame.drawFastVLine(158, 56, 72, 0xad7f);
+            frame.drawFastVLine(159, 56, 72, 0xa514);
+
+            frame.drawFastVLine(12, 56, 72, 0x4a51);
+            frame.drawFastVLine(13, 56, 72, 0x6b7e);
+            frame.drawFastVLine(14, 56, 72, 0xad7f);
+
+            frame.drawFastVLine(48, 56, 72, 0x4a51);
+            frame.drawFastVLine(49, 56, 72, 0x6b7e);
+            frame.drawFastVLine(50, 56, 72, 0xad7f);
+
+            frame.drawFastVLine(84, 56, 72, 0x4a51);
+            frame.drawFastVLine(85, 56, 72, 0x6b7e);
+            frame.drawFastVLine(86, 56, 72, 0xad7f);
+
+            frame.drawFastVLine(120, 56, 72, 0x4a51);
+            frame.drawFastVLine(121, 56, 72, 0x6b7e);
+            frame.drawFastVLine(122, 56, 72, 0xad7f);
+            printf("ReDraw\n");
+        }
         //----------------------MAIN PAGE-------------------------
-        frame.setCursor(0, 56);
-        if (ChlPos == 0) {
+        if (ChlPos == 0 && !sideMenu) {
             frame.fillRect(0, 56, 13, 72, 0x630c);
         } else {
             frame.fillRect(0, 56, 13, 72, 0x2945);
@@ -597,11 +685,27 @@ inline void MainPage() {
         frame.drawRect(0, 87, 160, 9, 0xd69a);
         // frame.drawRect(1, 89, 160, 8, 0x7bcf);
         // printf("%d %d\n", i, tracker_point+i);
-        for (int8_t i = -1; i < 2; i++) {
-            if ((i - showPart) > 0) {
-                printf("Hello?");
-            }
+        frame.setCursor(116, 29);
+        frame.fillRect(115, 28, 21, 25, 0x2104);
+        if (sideMenu == 4) {
+            frame.fillRect(137, 28, 21, 25, 0x630c);
+        } else {
+            frame.fillRect(137, 28, 21, 25, 0x2104);
         }
+        frame.drawRect(114, 27, 45, 27, 0xa514);
+        frame.fillRect(115, 36, 43, 9, 0x7bcf);
+        frame.drawRect(113, 26, 47, 29, ST7735_WHITE);
+        frame.drawFastVLine(136, 28, 25, 0xd69a);
+        for (int8_t i = -1; i < 2; i++) {
+            if ((showPart+i >= 0) && (showPart+i < NUM_PATTERNS)) {
+                frame.printf("%3d %3d\n", showPart+i, part_table[showPart+i]);
+                // frame.printf("888|888\n");
+            } else {
+                frame.printf("\n");
+            }
+            frame.setCursor(116, frame.getCursorY());
+        }
+        frame.setCursor(0, 56);
         for (int8_t i = -4; i < 5; i++) {
             if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
@@ -632,12 +736,160 @@ inline void MainPage() {
             }
         }
         frame.setTextColor(ST7735_WHITE);
+
+        if (sideMenu) {
+            for (uint8_t i = 0; i < 3; i++) {
+                if (sideMenu-1 == i) {
+                    frame.fillRect(1+(i*37), 41, 36, 13, 0x630c);
+                } else {
+                    frame.fillRect(1+(i*37), 41, 36, 13, 0x2945);
+                }
+            }
+
+            if (fileMenu) {
+                fillMidRect(80, 50, 0x4208);
+                drawMidRect(80, 50, ST7735_WHITE);
+                frame.setTextColor(0x7bcf);
+                setMidCusr(80, 50, 3);
+                frame.printf("FILE");
+                frame.setTextColor(ST7735_WHITE);
+                setMidCusr(80, 50, 2);
+                frame.printf("FILE\n");
+                setMidCusr(80, 50, 2);
+                uint8_t CXTmp = frame.getCursorX()+4;
+                frame.setCursor(CXTmp, frame.getCursorY()+14);
+                frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((fileMenu-1)*11), 70, 11, 0x7bef);
+                frame.printf("New\n");
+                frame.setCursor(CXTmp, frame.getCursorY()+3);
+                frame.printf("Open\n");
+                frame.setCursor(CXTmp, frame.getCursorY()+3);
+                frame.printf("Close");
+                // frame.setTextColor(0xf7be);
+                if (keyUP) {
+                    keyUP = false;
+                    fileMenu--;
+                    if (fileMenu < 1) {
+                        fileMenu = 3;
+                    }
+                }
+                if (keyDOWN) {
+                    keyDOWN = false;
+                    fileMenu++;
+                    if (fileMenu > 3) {
+                        fileMenu = 1;
+                    }
+                }
+            }
+
+            if (keyL) {
+                keyL = false;
+                sideMenu--;
+                if (sideMenu < 1) {
+                    sideMenu = 4;
+                }
+            }
+            if (keyR) {
+                keyR = false;
+                sideMenu++;
+                if (sideMenu > 4) {
+                    sideMenu = 1;
+                }
+            }
+            if (keyOK) {
+                keyOK = false;
+                if (fileMenu) {
+                    if (fileMenu == 3) {
+                        fileMenu = 0;
+                        windowsClose = true;
+                    }
+                    if (fileMenu == 2) {
+                        loadOk = false;
+                        // mute[ChlPos-1] = !mute[ChlPos-1];
+                        //vTaskDelete(COMP);
+                        //vTaskDelete(LOAD);
+                        playStat = false;
+                        part_buffer_point = 0;
+                        part_point = 2;
+                        showPart = 0;
+                        tracker_point = 0;
+                        fileOpt();
+                        read_pattern_table();
+                        read_wave_info();
+                        comp_wave_ofst();
+                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
+                        if (NUM_PATTERNS == 1) {
+                            read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
+                        } else {
+                            read_part_data((uint8_t*)tracker_data, part_table[1], part_buffer[1]);
+                        }
+                        fileMenu = 0;
+                        windowsClose = true;
+                        MainReDraw();
+                        frame.drawFastHLine(0, 9, 160, 0xe71c);
+                        frame.drawFastHLine(0, 18, 160, 0xe71c);
+                        frame.fillRect(113, 19, 47, 7, 0xa514);
+                        frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+                        frame.fillRect(0, 10, 160, 8, 0x2104);
+                        uint8_t sideMenu = 0;
+                        uint8_t fileMenu = 0;
+                        printf("START PLAY\n");
+                        //xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, &COMP, 0);
+                        //xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, &LOAD, 0);
+                    }
+                    if (fileMenu == 1) {
+                        loadOk = false;
+                        playStat = false;
+                        part_buffer_point = 0;
+                        part_point = 2;
+                        showPart = 0;
+                        new_tracker_file();
+                        read_pattern_table();
+                        read_wave_info();
+                        comp_wave_ofst();
+                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
+                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
+                        tracker_point = 0;
+                        fileMenu = 0;
+                        windowsClose = true;
+                        MainReDraw();
+                        frame.drawFastHLine(0, 9, 160, 0xe71c);
+                        frame.drawFastHLine(0, 18, 160, 0xe71c);
+                        frame.fillRect(113, 19, 47, 7, 0xa514);
+                        frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+                        frame.fillRect(0, 10, 160, 8, 0x2104);
+                        uint8_t sideMenu = 0;
+                        uint8_t fileMenu = 0;
+                    }
+                } else {
+                    if (sideMenu == 3) {
+                        printf("SAMP\n");
+                    }
+                    if (sideMenu == 2) {
+                        // mute[ChlPos-1] = !mute[ChlPos-1];
+                        fileMenu = 1;
+                    }
+                    if (sideMenu == 1) {
+                        sideMenu = 0;
+                        windowsClose = true;
+                    }
+                }
+            }
+        }
+
+        frame.setCursor(6, 44);
+        frame.printf("CHAN");
+        if (!fileMenu) {
+        frame.setCursor(44, 44);
+        frame.printf("FILE");
+        frame.setCursor(82, 44);
+        frame.printf("SAMP");}
+
         frame.fillRect(1, 20, 64, 18, ST7735_BLACK);
         frame.setCursor(1, 20);
         frame.printf("BPM: %d", BPM);
 
-        frame.setCursor(1, 29);
-        frame.printf("SPD: %d", SPD);
+        frame.setCursor(1, 28);
+        frame.printf("SPD: %d %d %d", SPD, part_point, part_buffer_point);
 
         if (ChlMenuPos) {
             fillMidRect(90, 50, 0x4208);
@@ -658,7 +910,7 @@ inline void MainPage() {
                 frame.printf("Mute\n");
             }
             frame.setCursor(CXTmp, frame.getCursorY()+3);
-            frame.printf("CHL Editer\n");
+            frame.printf("Edit CHL%d\n", ChlPos);
             frame.setCursor(CXTmp, frame.getCursorY()+3);
             frame.printf("Close");
             // frame.setTextColor(0xf7be);
@@ -706,43 +958,17 @@ inline void MainPage() {
             }
         }
 
-        if (windowsClose) {
-            windowsClose = false;
-            frame.fillRect(0, 32, 160, 22, ST7735_BLACK);
-            frame.drawFastHLine(0, 54, 160, ST7735_WHITE);
-            frame.drawFastHLine(0, 55, 160, 0xa514);
-            frame.drawFastVLine(156, 56, 72, 0x4a51);
-            frame.drawFastVLine(157, 56, 72, 0x6b7e);
-            frame.drawFastVLine(158, 56, 72, 0xad7f);
-            frame.drawFastVLine(159, 56, 72, 0xa514);
-
-            frame.drawFastVLine(12, 56, 72, 0x4a51);
-            frame.drawFastVLine(13, 56, 72, 0x6b7e);
-            frame.drawFastVLine(14, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(48, 56, 72, 0x4a51);
-            frame.drawFastVLine(49, 56, 72, 0x6b7e);
-            frame.drawFastVLine(50, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(84, 56, 72, 0x4a51);
-            frame.drawFastVLine(85, 56, 72, 0x6b7e);
-            frame.drawFastVLine(86, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(120, 56, 72, 0x4a51);
-            frame.drawFastVLine(121, 56, 72, 0x6b7e);
-            frame.drawFastVLine(122, 56, 72, 0xad7f);
-            printf("ReDraw\n");
-        }
-
         frame.display();
-        vTaskDelay(2);
+
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
-        if (!ChlMenuPos) {
+        if (!ChlMenuPos && !sideMenu) {
             if (keyOK) {
                 keyOK = false;
                 if (ChlPos) {
                     ChlMenuPos = 1;
+                } else {
+                    sideMenu = 1;
                 }
             }
             if (keyUP) {
@@ -771,7 +997,7 @@ inline void MainPage() {
     }
 }
 
-inline void ChlEdit() {
+void ChlEdit() {
     frame.setTextSize(2);
     frame.setCursor(0, 12);
     frame.printf("CHL%d", ChlPos);
@@ -782,7 +1008,7 @@ inline void ChlEdit() {
     int8_t EditPos = 0;
     bool enbRec = false;
     for (;;) {
-        frame.fillRect(0, 40, 77, 87, ST7735_BLACK);
+        frame.fillRect(0, 40, 77, 88, ST7735_BLACK);
         frame.fillRect(0, 40, vol[ChlPos-1], 8, (((vol[ChlPos-1]>>1) << 11) | (clamp(vol[ChlPos-1], 0, 63) << 5) | (vol[ChlPos-1]>>1)));//0x8578);
         frame.setTextColor(0xef9d);
         frame.setCursor(0, 49);
@@ -914,6 +1140,7 @@ inline void ChlEdit() {
                 EditPos = 0;
             }
         }
+        vTaskDelay(2);
     }
 }
 
@@ -921,38 +1148,20 @@ void display_lcd(void *arg) {
     tft.initR(INITR_BLACKTAB);
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
-    frame.setTextWrap(true);
-    frame.setTextSize(1);
-    frame.setTextColor(0x2945);
-    frame.setCursor(2, 2);
-    frame.print("ESP32Tracker");
-    frame.setTextColor(0x7bcf);
-    frame.setCursor(1, 1);
-    frame.print("ESP32Tracker");
-    frame.setCursor(100, 0);
-    frame.print("libchara");
-    frame.setTextColor(ST7735_WHITE);
-    frame.setCursor(0, 0);
-    frame.print("ESP32Tracker");
-    frame.setTextColor(ST7735_WHITE);
-    frame.setTextSize(0);
+    MainReDraw();
     lcdOK = false;
-    if (!read_tracker_file(fileSelet("/spiffs"))) {
-        exit(1);
-    }
     MenuPos = 0;
     read_pattern_table();
     read_wave_info();
     comp_wave_ofst();
     read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-    printf("PASS 2\n");
+    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
     part_buffer_point = 0;
-    part_point = 1;
+    part_point = 2;
     showPart = 0;
     loadOk = true;
-    xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, NULL, 0);
-    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, NULL, 0);
-    printf("PASS 3\n");
+    xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
+    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, &LOAD, 0);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -1014,7 +1223,8 @@ void comp(void *arg) {
     int16_t audio_tempR;
     int8_t atkTick[4] = {0};
     int8_t cutTick[4] = {0};
-    for(;;) { 
+    for(;;) {
+        // printf("READ!\n");
         if (playStat) {
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
@@ -1030,8 +1240,6 @@ void comp(void *arg) {
                 audio_tempR = (int16_t)
                         roundf(buffer_ch[2][Mtick>>1]
                                 + buffer_ch[3][Mtick>>1]);
-                // limit(audio_temp);
-                //buffer[Mtick+1] = 0;
                 buffer[Mtick>>1] = audio_tempL;
                 buffer[(Mtick>>1)+1] = audio_tempR;
                 Mtick+=4;
@@ -1043,7 +1251,6 @@ void comp(void *arg) {
                     arp_p++;
                     if (tick_time != tick_speed) {
                         for(chl = 0; chl < 4; chl++) {
-                            // period[chl] += enbSlideDown[chl] ? SlideDown[chl] : (enbSlideUp[chl] ? -SlideUp[chl] : 0);
                             if (enbSlideUp[chl]) {
                                 // printf("SLIDE UP %d", period[chl]);
                                 period[chl] -= SlideUp[chl];
@@ -1302,7 +1509,6 @@ void comp(void *arg) {
                                 read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
                                 part_point++;
                             }
-                            printf("%d\n", part_buffer_point);
                             skipToNextPart = false;
                             part_buffer_point = !part_buffer_point;
                             loadOk = true;
@@ -1378,6 +1584,7 @@ void comp(void *arg) {
                 showPart++;
                 if (showPart >= NUM_PATTERNS) {
                     showPart = 0;
+                    part_point = 1;
                 }
                 printf("SKIP TO %d\n", part_point);
                 read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
@@ -1391,12 +1598,17 @@ void comp(void *arg) {
             if (tracker_point < 0) {
                 tracker_point = 63;
                 showPart--;
-                if (showPart < 0) {
-                    showPart = NUM_PATTERNS;
-                }
                 printf("SKIP TO %d\n", part_point);
-                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
                 read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
+                if (showPart < 0) {
+                    showPart = NUM_PATTERNS-1;
+                    part_point = 2;
+                    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[!part_buffer_point]);
+                }
+                if (part_point <= 0) {
+                    part_point = NUM_PATTERNS;
+                }
+                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
                 printf("%d\n", part_buffer_point);
                 // part_buffer_point = !part_buffer_point;
                 part_point--;
@@ -1443,6 +1655,9 @@ void load(void *arg) {
 }
 
 void read_pattern_table() {
+    for (uint8_t i = 0; i < 128; i++) {
+       part_table[i] = 0;
+    }
     for (uint8_t p = 0; p < 20; p++) {
         song_name[p] = tracker_data[p];
     }
@@ -1483,8 +1698,11 @@ void read_wave_info() {
 }
 
 void comp_wave_ofst() {
+    for (uint8_t i = 0; i < 34; i++) {
+        wav_ofst[i] = 0;
+    }
     wav_ofst[1] = 1084 + ((find_max(NUM_PATTERNS)+1) * 1024);
-    ESP_LOGI("FIND MAX", "%d OFST %ld", find_max(NUM_PATTERNS), wav_ofst[1]);
+    printf("FIND MAX %d OFST %ld", find_max(NUM_PATTERNS), wav_ofst[1]);
 /*
     for (uint8_t i = 2; i < 33; i++) {
         printf("%d %d\n", i, wav_ofst[i]);
@@ -1493,7 +1711,7 @@ void comp_wave_ofst() {
     }
 */
     for (uint8_t i = 1; i < 33; i++) {
-        // printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
+        printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
         wav_ofst[i+1] += (wav_ofst[i] + wave_info[i][0]);
     }
 }
@@ -1523,8 +1741,12 @@ void input(void *arg) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
             if (received == 32) {
+                if (playStat) {
+                    printf("STOP\n");
+                } else {
+                    printf("START\n");
+                }
                 playStat = !playStat;
-                printf("START/STOP\n");
             }
             if (received == 119) {
                 keyUP = true;
@@ -1562,7 +1784,6 @@ void input(void *arg) {
                 TestNote = true;
             }
             if (received == 112) {
-                printf("FREE MEM: %d\n", esp_get_free_heap_size());
                 vTaskPrioritySet(NULL, 5);
                 FileInfo* files = NULL;
                 int count = list_directory(root_path, &files);
@@ -1577,6 +1798,9 @@ void input(void *arg) {
                 }
                 free(files);
                 vTaskPrioritySet(NULL, 2);
+            }
+            if (received == 109) {
+                printf("FREE MEM: %d\n", esp_get_free_heap_size());
             }
             Serial.flush();
         }

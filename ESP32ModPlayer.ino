@@ -1633,13 +1633,21 @@ void comp(void *arg) {
 FILE *f;
 void load(void *arg) {
     while(true) {
-        if (loadOk) {
-            printf("LOADING BUF%d\n", !part_buffer_point);
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
-            part_point++;
+        if (part_buffer_point == 0 && loadOk) {
+            printf("LOADING BUF1\n");
             if (part_point >= NUM_PATTERNS) {
                 part_point = 0;
             }
+            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[1]);
+            part_point++;
+            loadOk = false;
+        } else if (part_buffer_point == 1 && loadOk) {
+            printf("LOADING BUF0\n");
+            if (part_point >= NUM_PATTERNS) {
+                part_point = 0;
+            }
+            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[0]);
+            part_point++;
             loadOk = false;
         }
         vTaskDelay(64);

@@ -432,6 +432,7 @@ bool keyUP = false;
 bool keyDOWN = false;
 bool keyL = false;
 bool keyR = false;
+bool keySpace = false;
 int8_t ChlPos = 0;
 // bool ChlMenu = false;
 int8_t ChlMenuPos = 0;
@@ -439,6 +440,8 @@ bool windowsClose = true;
 int8_t MenuPos = 2;
 TaskHandle_t COMP;
 TaskHandle_t LOAD;
+bool partUP = false;
+bool partDOWN = false;
 
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
@@ -765,6 +768,7 @@ void MainPage() {
                 frame.setCursor(CXTmp, frame.getCursorY()+3);
                 frame.printf("Close");
                 // frame.setTextColor(0xf7be);
+                keyL = keyR = false;
                 if (keyUP) {
                     keyUP = false;
                     fileMenu--;
@@ -778,6 +782,21 @@ void MainPage() {
                     if (fileMenu > 3) {
                         fileMenu = 1;
                     }
+                }
+            }
+
+            if (keyDOWN) {
+                keyDOWN = false;
+                if (sideMenu == 4) {
+                    playStat = false;
+                    partDOWN = true;
+                }
+            }
+            if (keyUP) {
+                keyUP = false;
+                if (sideMenu == 4) {
+                    playStat = false;
+                    partUP = true;
                 }
             }
 
@@ -832,6 +851,7 @@ void MainPage() {
                         frame.fillRect(0, 10, 160, 8, 0x2104);
                         uint8_t sideMenu = 0;
                         uint8_t fileMenu = 0;
+                        tracker_point = 0;
                         printf("START PLAY\n");
                         //xTaskCreatePinnedToCore(&comp, "Play", 9000, NULL, 5, &COMP, 0);
                         //xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, &LOAD, 0);
@@ -859,6 +879,7 @@ void MainPage() {
                         frame.fillRect(0, 10, 160, 8, 0x2104);
                         uint8_t sideMenu = 0;
                         uint8_t fileMenu = 0;
+                        tracker_point = 0;
                     }
                 } else {
                     if (sideMenu == 3) {
@@ -889,7 +910,7 @@ void MainPage() {
         frame.printf("BPM: %d", BPM);
 
         frame.setCursor(1, 28);
-        frame.printf("SPD: %d %d %d", SPD, part_point, part_buffer_point);
+        frame.printf("SPD: %d", SPD);
 
         if (ChlMenuPos) {
             fillMidRect(90, 50, 0x4208);
@@ -993,6 +1014,13 @@ void MainPage() {
                     ChlPos = 0;
                 }
             }
+        }
+        if (keySpace) {
+            keySpace = false;
+            if (!playStat) {
+                tracker_point = 0;
+            }
+            playStat = !playStat;
         }
     }
 }
@@ -1140,6 +1168,10 @@ void ChlEdit() {
                 EditPos = 0;
             }
         }
+        if (keySpace) {
+            keySpace = false;
+            playStat = !playStat;
+        }
         vTaskDelay(2);
     }
 }
@@ -1161,7 +1193,7 @@ void display_lcd(void *arg) {
     showPart = 0;
     loadOk = true;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
-    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 0, &LOAD, 0);
+    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 3, &LOAD, 0);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -1579,8 +1611,11 @@ void comp(void *arg) {
                     vol[0] = 64;
                 }
             }
-            if (tracker_point > 63) {
-                tracker_point = 0;
+            if (tracker_point > 63 || partDOWN) {
+                if (!partDOWN) {
+                    tracker_point = 0;
+                }
+                partDOWN = false;
                 showPart++;
                 if (showPart >= NUM_PATTERNS) {
                     showPart = 0;
@@ -1595,8 +1630,11 @@ void comp(void *arg) {
                 // part_point = showPart+1;
                 // loadOk = true;
             }
-            if (tracker_point < 0) {
-                tracker_point = 63;
+            if (tracker_point < 0 || partUP) {
+                if (!partUP) {
+                    tracker_point = 63;
+                }
+                partUP = false;
                 showPart--;
                 printf("SKIP TO %d\n", part_point);
                 read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
@@ -1741,12 +1779,8 @@ void input(void *arg) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
             if (received == 32) {
-                if (playStat) {
-                    printf("STOP\n");
-                } else {
-                    printf("START\n");
-                }
-                playStat = !playStat;
+                keySpace = true;
+                printf("SPACE\n");
             }
             if (received == 119) {
                 keyUP = true;
@@ -1802,7 +1836,7 @@ void input(void *arg) {
             if (received == 109) {
                 printf("FREE MEM: %d\n", esp_get_free_heap_size());
             }
-            Serial.flush();
+            // Serial.flush();
         }
         vTaskDelay(6);
     }

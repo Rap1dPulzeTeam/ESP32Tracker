@@ -1633,17 +1633,9 @@ void comp(void *arg) {
 FILE *f;
 void load(void *arg) {
     while(true) {
-        if (part_buffer_point == 0 && loadOk) {
-            printf("LOADING BUF1\n");
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[1]);
-            part_point++;
-            if (part_point >= NUM_PATTERNS) {
-                part_point = 0;
-            }
-            loadOk = false;
-        } else if (part_buffer_point == 1 && loadOk) {
+        if (loadOk) {
             printf("LOADING BUF0\n");
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[0]);
+            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
             part_point++;
             if (part_point >= NUM_PATTERNS) {
                 part_point = 0;

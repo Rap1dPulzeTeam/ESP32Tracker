@@ -243,8 +243,8 @@ uint16_t data_index_int[CHL_NUM] = {0};
 uint8_t smp_num[CHL_NUM] = {0};
 
 int16_t temp;
-uint16_t wave_info[33][5];
-uint32_t wav_ofst[34];
+uint16_t wave_info[33][5] = {0};
+uint32_t wav_ofst[34] = {0};
 int8_t showPart = 0;
 bool mute[4] = {false};
 
@@ -344,7 +344,7 @@ void display(void *arg) {
                 _ssd1306_line(&dev, 127, 0, 96, 63, false);
             }
             ssd1306_show_buffer(&dev);
-            // vTaskDelay(1);
+            vTaskDelay(1);
         }
     }
 }
@@ -842,6 +842,8 @@ void MainPage() {
                         part_point = 2;
                         showPart = 0;
                         tracker_point = 0;
+                        data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
+                        data_index_int[0] = data_index_int[1] = data_index_int[2] = data_index_int[3] = 0;
                         fileOpt();
                         read_pattern_table();
                         read_wave_info();
@@ -880,6 +882,8 @@ void MainPage() {
                         read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
                         read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
                         tracker_point = 0;
+                        data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
+                        data_index_int[0] = data_index_int[1] = data_index_int[2] = data_index_int[3] = 0;
                         fileMenu = 0;
                         windowsClose = true;
                         MainReDraw();
@@ -1911,7 +1915,7 @@ void setup()
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
     xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
-    xTaskCreate(&display, "wave_view", 7000, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(&display, "wave_view", 7000, NULL, 5, NULL, 0);
     /*
     pwm_audio_config_t pwm_audio_config = {
         .gpio_num_left = GPIO_NUM_5,

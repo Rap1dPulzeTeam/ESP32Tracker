@@ -119,14 +119,15 @@ inline uint8_t hexToDecimalTens(uint8_t num) {
 inline uint8_t hexToDecimalOnes(uint8_t num) {
     return num & 0x0F;
 }
+inline uint8_t hexToRow(uint8_t num) {
+    return hexToDecimalTens(num)*10 + hexToDecimalOnes(num);
+}
 inline float freq_up(float base_freq, uint8_t n) {
     return base_freq * powf(2.0f, (n / 12.0f));
 }
-// Unpacks 2bit DPCM data from an 8-bit variable
 inline uint8_t unpackDPCM(uint8_t data, uint8_t cont) {
     return (data & (0x03 << (cont << 1))) >> (cont << 1);
 }
-// packs 2bit DPCM data from an 8-bit variable
 inline uint8_t packDPCM(uint8_t input, uint8_t data, uint8_t cont) {
     return input |= ((data & 0x03) << (cont << 1));
 }
@@ -189,11 +190,16 @@ long read_tracker_file(const char* path) {
     printf("NOW READ FILE %s\n", path);
     // free(tracker_data);
     long file_size;
-    free(tracker_data);
+    if (tracker_data != NULL) {
+        free(tracker_data);
+    }
+    printf("FREE MEM\n");
     tracker_data = read_file(path, &file_size);
+    printf("READ FINISH\n");
     if ((tracker_data == NULL) || (file_size == 0)) {
         printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, file_size);
         free(tracker_data);
+        tracker_data = NULL;
         return 0;
     } else {
         if ((tracker_data[1080] != 0x4D) ||
@@ -202,6 +208,7 @@ long read_tracker_file(const char* path) {
             (tracker_data[1083] != 0x2E)) {
             printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, tracker_data[1080], tracker_data[1081], tracker_data[1082], tracker_data[1083]);
             free(tracker_data);
+            tracker_data = NULL;
             return -1;
         }
         printf("READ %s FINISH! FILE SIZE IS %ld\n", path, file_size);
@@ -1255,6 +1262,7 @@ void comp(void *arg) {
     int16_t audio_tempR;
     int8_t atkTick[4] = {0};
     int8_t cutTick[4] = {0};
+    int8_t skipToRow = 0;
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -1331,10 +1339,13 @@ void comp(void *arg) {
                     } else if (tick_time == tick_speed) {
                         tick_time = 0;
                         for (chl = 0; chl < 4; chl++) {
+
                             if (part_buffer[part_buffer_point][tracker_point][chl][2] == 13) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][3] == 0) {
-                                    skipToNextPart = true;
+                                if (part_buffer[part_buffer_point][tracker_point][chl][3]) {
+                                    skipToRow = hexToRow(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    printf("SKIP TO NEXT PART'S %d ROW\n", skipToRow);
                                 }
+                                skipToNextPart = true;
                             }
 
                             if (part_buffer[part_buffer_point][tracker_point][chl][2] == 11) {
@@ -1529,7 +1540,12 @@ void comp(void *arg) {
                             printf("SKIP TO %d\n", rowLoopStart);
                         }
                         if ((tracker_point > 63) || skipToNextPart || skipToAnyPart) {
-                            tracker_point = 0;
+                            if (skipToRow) {
+                                tracker_point = skipToRow;
+                                skipToRow = 0;
+                            } else {
+                                tracker_point = 0;
+                            }
                             showPart++;
                             if (showPart >= NUM_PATTERNS) {
                                 showPart = 0;

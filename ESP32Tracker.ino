@@ -381,6 +381,7 @@ float arpFreq[3][4];
 int8_t sample1;
 int8_t sample2;
 int8_t lastVol[4];
+/*
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
     if (vole == 0 || freq < 0 || mute[chl]) {
         return 0;
@@ -406,6 +407,45 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     }
     // 处理音频数据并应用音量调整
     return (float)((int8_t)tracker_data[data_index_int[chl] + smp_start] << 6) * vol_table[vole];
+}
+*/
+inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline) {
+    if (vole == 0 || freq < 0 || mute[chl]) {
+        return 0;
+    }
+
+    // 更新通道的数据索引
+    data_index_int[chl] = roundf(data_index[chl]);
+    data_index[chl] += freq / SMP_RATE;
+
+    // 检查是否启用了循环
+    if (isLoop) {
+        // 如果启用了循环，则调整索引
+        if (data_index_int[chl] >= (loopStart + loopLen)) {
+            data_index[chl] = loopStart;
+            data_index_int[chl] = loopStart;
+        }
+    } else {
+        // 检查是否到达了样本的末尾
+        if (data_index_int[chl] >= smp_size) {
+            vol[chl] = 0;
+            return 0;
+        }
+    }
+
+    // 处理音频数据并应用音量调整
+    float sample1 = (float)((int8_t)tracker_data[data_index_int[chl] + smp_start] << 6) * vol_table[vole];
+    float sample2 = 0.0f;
+
+    if (isline) {
+        if (data_index_int[chl] < smp_size - 1) {
+            sample2 = (float)((int8_t)tracker_data[data_index_int[chl] + 1 + smp_start] << 6) * vol_table[vole];
+            float frac = data_index[chl] - data_index_int[chl];
+            return (1.0f - frac) * sample1 + frac * sample2;
+        }
+    }
+
+    return sample1;
 }
 // AUDIO DATA COMP END ------------------------------------------
 
@@ -1249,8 +1289,8 @@ void comp(void *arg) {
     uint8_t VibratoPos[4] = {32};
     bool enbTremolo[4] = {false};
     uint8_t TremoloPos[4] = {32};
-    uint8_t TremoloSpeed[4] = {32};
-    uint8_t TremoloDepth[4] = {32};
+    uint8_t TremoloSpeed[4] = {0};
+    uint8_t TremoloDepth[4] = {0};
     int VibratoItem[4] = {0};
     uint16_t Mtick = 0;
     uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
@@ -1277,9 +1317,9 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (wave_info[smp_num[chl]][4] > 2) {
-                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
+                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], true);
                     } else {
-                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0]);
+                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], true);
                     }
                 }
                 audio_tempL = (int16_t)
@@ -1314,16 +1354,17 @@ void comp(void *arg) {
                             vol[chl] += (volUp[chl] - volDown[chl]);
                             vol[chl] = (vol[chl] > 63) ? 63 : (vol[chl] < 1) ? 0 : vol[chl];
 
-                            VibratoItem[chl] = enbVibrato[chl] ? (sine_table[VibratoPos[chl]] * VibratoDepth[chl]) >> 7 : 0;
+                            VibratoItem[chl] = enbVibrato[chl] ? (sine_table[VibratoPos[chl]] * VibratoDepth[chl]) / 128 : 0;
                             VibratoPos[chl] = enbVibrato[chl] ? (VibratoPos[chl] + VibratoSpeed[chl]) & 63 : 0;
 
                             if (enbTremolo[chl]) {
-                                int tremoloValue = (sine_table[TremoloPos[chl]] * TremoloDepth[chl]) >> 7;
+                                int tremoloValue = (sine_table[TremoloPos[chl]] * TremoloDepth[chl]) / 128;
                                 vol[chl] += tremoloValue;
                                 vol[chl] = (vol[chl] > 64) ? 64 : (vol[chl] < 1) ? 0 : vol[chl];
+                                // printf("TRE %3d  TREPOS %2d  TRESPD %1d  TREDPH %1d  VOL %3d\n", tremoloValue, TremoloPos[chl], TremoloSpeed[chl], TremoloDepth[chl], vol[chl]);
                                 TremoloPos[chl] = (TremoloPos[chl] + TremoloSpeed[chl]) & 63;
                             } else {
-                                TremoloPos[chl] = 0;
+                                TremoloPos[chl] = 32;
                             }
 
                             if (enbPortTone[chl]) {
@@ -1445,18 +1486,20 @@ void comp(void *arg) {
                                     }
                                     // printf("VIBRATO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
                                 }
+                                // VibratoPos[chl] = 0;
                             } else {
                                 enbVibrato[chl] = false;
                             }
 
                             if (part_buffer[part_buffer_point][tracker_point][chl][2] == 7) {
-                                enbVibrato[chl] = true;
+                                enbTremolo[chl] = true;
                                 if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
                                     TremoloSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
                                 }
                                 if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
                                     TremoloDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
                                 }
+                                // TremoloPos[chl] = 0;
                                 // printf("TREMOLO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
                             } else {
                                 enbTremolo[chl] = false;
@@ -1614,9 +1657,9 @@ void comp(void *arg) {
             loadOk = false;
             for (uint16_t i = 0; i < 4096; i+=4) {
                 if (wave_info[smp_num[0]][4] > 2) {
-                    buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0]);
+                    buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
                 } else {
-                    buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0]);
+                    buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
                 }
                 buffer[i>>1] = (int16_t)roundf(buffer_ch[0][i>>1]);
                 buffer[(i>>1)+1] = (int16_t)roundf(buffer_ch[0][i>>1]);

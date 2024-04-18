@@ -276,14 +276,16 @@ void display(void *arg) {
         uint8_t volTemp;
         uint8_t addr[4];
         if (view_mode) {
-            ssd1306_clear_buffer(&dev);
-            ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
-            for (uint8_t x = 0; x < 128; x++) {
-                _ssd1306_pixel(&dev, x, (buffer[x*4]/1024)+32, false);
-                _ssd1306_pixel(&dev, x, (buffer[(x*4)+1]/1024)+32, false);
+            for (uint8_t ct = 0; ct < 16; ct++) {
+                ssd1306_clear_buffer(&dev);
+                ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
+                for (uint16_t x = 0; x < 128; x++) {
+                    _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
+                    _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
+                }
+                ssd1306_show_buffer(&dev);
+                vTaskDelay(1);
             }
-            ssd1306_show_buffer(&dev);
-            vTaskDelay(1);
         } else {
             for (uint8_t contr = 0; contr < 2; contr++) {
                 ssd1306_clear_buffer(&dev);

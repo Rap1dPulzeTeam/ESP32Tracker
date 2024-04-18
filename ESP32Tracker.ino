@@ -275,83 +275,94 @@ void display(void *arg) {
         uint8_t x;
         uint8_t volTemp;
         uint8_t addr[4];
-        for (uint8_t contr = 0; contr < 2; contr++) {
+        if (view_mode) {
             ssd1306_clear_buffer(&dev);
-            sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
-            addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
-            addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
-            addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
-            addr[3] = data_index[3] * (32.0f / wave_info[smp_num[3]][0]);
-            // ssd1306_display_text(&dev, 7, tet, 16, false);
-            ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
-            ssd1306_display_text(&dev, 6, ten, 16, false);
-            if (!mute[0]) {
-            for (x = 0; x < 32; x++) {
-                _ssd1306_line(&dev, x, 32, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
-                // _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
-                if (period[0]) {
-                    _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))%64, false);
-                }
-                // printf("DISPLAY %d\n", roundf(period[0] * (64.0f / 743.0f)));
-                volTemp = (vol[0]/2) % 64;
-                _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
-                for (uint8_t i = 58; i < 64; i++) {
-                    _ssd1306_line(&dev, 0, i, volTemp, i, false);
-                }
-            }} else {
-                _ssd1306_line(&dev, 0, 0, 31, 63, false);
-                _ssd1306_line(&dev, 31, 0, 0, 63, false);
-            }
-            if (!mute[1]) {
-            for (x = 32; x < 64; x++) {
-                _ssd1306_line(&dev, x, 32, x, ((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32, false);
-                // _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 256) + 32, false);
-                if (period[1]) {
-                    _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))%64, false);
-                }
-                volTemp = vol[1]/2;
-                _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
-                for (uint8_t i = 58; i < 64; i++) {
-                    _ssd1306_line(&dev, 31, i, volTemp+31, i, false);
-                }
-            }} else {
-                _ssd1306_line(&dev, 32, 0, 63, 63, false);
-                _ssd1306_line(&dev, 63, 0, 32, 63, false);
-            }
-            if (!mute[2]) {
-            for (x = 64; x < 96; x++) {
-                _ssd1306_line(&dev, x, 32, x, ((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32, false);
-               //  _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
-                if (period[2]) {
-                    _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))%64, false);
-                }
-                volTemp = vol[2]/2;
-                _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
-                for (uint8_t i = 58; i < 64; i++) {
-                    _ssd1306_line(&dev, 63, i, volTemp+63, i, false);
-                }
-            }} else {
-                _ssd1306_line(&dev, 64, 0, 95, 63, false);
-                _ssd1306_line(&dev, 95, 0, 64, 63, false);
-            }
-            if (!mute[3]) {
-            for (x = 96; x < 128; x++) {
-                _ssd1306_line(&dev, x, 32, x, ((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32, false);
-                // _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 256) + 32, false);
-                if (period[3]) {
-                    _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))%64, false);
-                }
-                volTemp = vol[3]/2;
-                _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
-                for (uint8_t i = 58; i < 64; i++) {
-                    _ssd1306_line(&dev, 95, i, volTemp+95, i, false);
-                }
-            }} else {
-                _ssd1306_line(&dev, 96, 0, 127, 63, false);
-                _ssd1306_line(&dev, 127, 0, 96, 63, false);
+            ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
+            for (uint8_t x = 0; x < 128; x++) {
+                _ssd1306_pixel(&dev, x, (buffer[x*4]/1024)+32, false);
+                _ssd1306_pixel(&dev, x, (buffer[(x*4)+1]/1024)+32, false);
             }
             ssd1306_show_buffer(&dev);
             vTaskDelay(1);
+        } else {
+            for (uint8_t contr = 0; contr < 2; contr++) {
+                ssd1306_clear_buffer(&dev);
+                sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
+                addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
+                addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
+                addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
+                addr[3] = data_index[3] * (32.0f / wave_info[smp_num[3]][0]);
+                // ssd1306_display_text(&dev, 7, tet, 16, false);
+                ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
+                ssd1306_display_text(&dev, 6, ten, 16, false);
+                if (!mute[0]) {
+                for (x = 0; x < 32; x++) {
+                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    // _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    if (period[0]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))%64, false);
+                    }
+                    // printf("DISPLAY %d\n", roundf(period[0] * (64.0f / 743.0f)));
+                    volTemp = (vol[0]/2) % 64;
+                    _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
+                    for (uint8_t i = 58; i < 64; i++) {
+                        _ssd1306_line(&dev, 0, i, volTemp, i, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 0, 0, 31, 63, false);
+                    _ssd1306_line(&dev, 31, 0, 0, 63, false);
+                }
+                if (!mute[1]) {
+                for (x = 32; x < 64; x++) {
+                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    // _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 256) + 32, false);
+                    if (period[1]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))%64, false);
+                    }
+                    volTemp = vol[1]/2;
+                    _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
+                    for (uint8_t i = 58; i < 64; i++) {
+                        _ssd1306_line(&dev, 31, i, volTemp+31, i, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 32, 0, 63, 63, false);
+                    _ssd1306_line(&dev, 63, 0, 32, 63, false);
+                }
+                if (!mute[2]) {
+                for (x = 64; x < 96; x++) {
+                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                //  _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
+                    if (period[2]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))%64, false);
+                    }
+                    volTemp = vol[2]/2;
+                    _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
+                    for (uint8_t i = 58; i < 64; i++) {
+                        _ssd1306_line(&dev, 63, i, volTemp+63, i, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 64, 0, 95, 63, false);
+                    _ssd1306_line(&dev, 95, 0, 64, 63, false);
+                }
+                if (!mute[3]) {
+                for (x = 96; x < 128; x++) {
+                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    // _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 256) + 32, false);
+                    if (period[3]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))%64, false);
+                    }
+                    volTemp = vol[3]/2;
+                    _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
+                    for (uint8_t i = 58; i < 64; i++) {
+                        _ssd1306_line(&dev, 95, i, volTemp+95, i, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 96, 0, 127, 63, false);
+                    _ssd1306_line(&dev, 127, 0, 96, 63, false);
+                }
+                ssd1306_show_buffer(&dev);
+                vTaskDelay(1);
+            }
         }
     }
 }
@@ -1307,11 +1318,12 @@ void Setting() {
                 }
                 refs_p++;
                 if (refs_p > 4) {
-                    frame.fillRect(0, 10, 100, 10, ST7735_BLACK);
+                    frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
                     frame.setCursor(0, 10);
-                    frame.printf("POS=%d", ftell(wave_file));
+                    frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(44100*4));
                     frame.display();
                 }
+                vTaskDelay(1);
             }
             i2s_zero_dma_buffer(I2S_NUM_0);
             keyOK = false;

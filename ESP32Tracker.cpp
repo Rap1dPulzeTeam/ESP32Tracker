@@ -1,4 +1,6 @@
+#include <Arduino.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -34,6 +36,13 @@
 #define TFT_CS 10
 #define TFT_RST 8
 uint8_t *tracker_data;
+void fillMidRect(uint8_t w, uint8_t h, uint16_t color);
+void drawMidRect(uint8_t w, uint8_t h, uint16_t color);
+void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
+void read_pattern_table();
+void read_wave_info();
+void comp_wave_ofst();
+
 /*
 #define HSPI_MISO 16 //19 
 #define HSPI_MOSI 17 //23 
@@ -42,6 +51,22 @@ uint8_t *tracker_data;
 */
 // Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+typedef struct {
+    char     chunkID[4];     // "RIFF"
+    uint32_t chunkSize;      // 文件大小
+    char     format[4];      // "WAVE"
+    char     subchunk1ID[4]; // "fmt "
+    uint32_t subchunk1Size;  // 子块1大小
+    uint16_t audioFormat;    // 音频格式
+    uint16_t numChannels;    // 声道数
+    uint32_t sampleRate;     // 采样率
+    uint32_t byteRate;       // 码率
+    uint16_t blockAlign;     // 数据块对齐
+    uint16_t bitsPerSample;  // 位深度
+    char     subchunk2ID[4]; // "data"
+    uint32_t subchunk2Size;  // 子块2大小
+} WavHeader_t;
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -299,16 +324,16 @@ void display(void *arg) {
                 ssd1306_display_text(&dev, 6, ten, 16, false);
                 if (!mute[0]) {
                 for (x = 0; x < 32; x++) {
-                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[0]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))%64, false);
+                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
                     }
                     // printf("DISPLAY %d\n", roundf(period[0] * (64.0f / 743.0f)));
                     volTemp = (vol[0]/2) % 64;
                     _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
-                    for (uint8_t i = 58; i < 64; i++) {
-                        _ssd1306_line(&dev, 0, i, volTemp, i, false);
+                    if (x < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
                     }
                 }} else {
                     _ssd1306_line(&dev, 0, 0, 31, 63, false);
@@ -316,15 +341,15 @@ void display(void *arg) {
                 }
                 if (!mute[1]) {
                 for (x = 32; x < 64; x++) {
-                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[1]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))%64, false);
+                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[1]/2;
                     _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
-                    for (uint8_t i = 58; i < 64; i++) {
-                        _ssd1306_line(&dev, 31, i, volTemp+31, i, false);
+                    if (x - 32 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
                     }
                 }} else {
                     _ssd1306_line(&dev, 32, 0, 63, 63, false);
@@ -332,15 +357,15 @@ void display(void *arg) {
                 }
                 if (!mute[2]) {
                 for (x = 64; x < 96; x++) {
-                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32, false);
-                //  _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
+                    // _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[2]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))%64, false);
+                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[2]/2;
                     _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
-                    for (uint8_t i = 58; i < 64; i++) {
-                        _ssd1306_line(&dev, 63, i, volTemp+63, i, false);
+                    if (x - 64 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
                     }
                 }} else {
                     _ssd1306_line(&dev, 64, 0, 95, 63, false);
@@ -348,15 +373,15 @@ void display(void *arg) {
                 }
                 if (!mute[3]) {
                 for (x = 96; x < 128; x++) {
-                    _ssd1306_line(&dev, x, 32, x, ((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[3]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))%64, false);
+                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[3]/2;
                     _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
-                    for (uint8_t i = 58; i < 64; i++) {
-                        _ssd1306_line(&dev, 95, i, volTemp+95, i, false);
+                    if (x - 96 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
                     }
                 }} else {
                     _ssd1306_line(&dev, 96, 0, 127, 63, false);
@@ -645,7 +670,7 @@ uint8_t showTmpEFX2_2;
 
 inline void fileOpt() {
     for (;;) {
-        long ret = read_tracker_file(fileSelet("/spiffs"));
+        long ret = read_tracker_file(fileSelet("/sdcard"));
         if (ret == -1) {
             frame.fillRect(0, 0, 160, 128, ST7735_BLACK);
             frame.setTextSize(3);
@@ -1264,6 +1289,23 @@ void ChlEdit() {
     }
 }
 
+int parseWavHeader(FILE* file, WavHeader_t* header) {
+
+    fread(header, sizeof(WavHeader_t), 1, file);
+
+    // 检查文件格式
+    if (header->chunkID[0] != 'R' || header->chunkID[1] != 'I' || 
+        header->chunkID[2] != 'F' || header->chunkID[3] != 'F' ||
+        header->format[0] != 'W' || header->format[1] != 'A' ||
+        header->format[2] != 'V' || header->format[3] != 'E') {
+        printf("Error: Not a valid WAV file.\n");
+        fclose(file);
+        return -1;
+    }
+
+    return 0;
+}
+
 void Setting() {
     for (;;) {
         frame.display();
@@ -1280,11 +1322,22 @@ void Setting() {
             view_mode = true;
             const char *wave_file_name = fileSelet("/sdcard");
             wave_file = fopen(wave_file_name, "rb");
+            WavHeader_t header;
+            parseWavHeader(wave_file, &header);
+            printf("WAV File Information:\n");
+            printf("Sample Rate: %u Hz\n", header.sampleRate);
+            printf("Channels: %u\n", header.numChannels);
+            printf("Bits Per Sample: %u\n", header.bitsPerSample);
             size_t writeing;
             i2s_zero_dma_buffer(I2S_NUM_0);
+            i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
             frame.fillScreen(ST7735_BLACK);
-            frame.setCursor(1, 1);
-            frame.printf("PLATING...");
+            frame.setTextColor(ST7735_WHITE);
+            frame.setCursor(0, 0);
+            frame.printf("PLATING...\n\n\n\n\n");
+            frame.setTextColor(0x52aa);
+            frame.printf("WAV File Information:\nSample Rate: %u Hz\nBits Per Sample: %u\nChannels: %u", header.sampleRate, header.bitsPerSample, header.numChannels);
+            frame.setTextColor(ST7735_WHITE);
             frame.display();
             float i2s_vol = 1.0f;
             uint16_t read_p;
@@ -1298,11 +1351,11 @@ void Setting() {
                 // printf("%d\n", writeing);
                 if (keyL) {
                     keyL = false;
-                    fseek(wave_file, -6890, SEEK_CUR);
+                    fseek(wave_file, -6890*16, SEEK_CUR);
                 }
                 if (keyR) {
                     keyR = false;
-                    fseek(wave_file, 6890, SEEK_CUR);
+                    fseek(wave_file, 6890*16, SEEK_CUR);
                 }
                 if (keyUP) {
                     keyUP = false;
@@ -1322,12 +1375,15 @@ void Setting() {
                 if (refs_p > 4) {
                     frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
                     frame.setCursor(0, 10);
-                    frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(44100*4));
+                    frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
                     frame.display();
                 }
                 vTaskDelay(1);
             }
+            memset(buffer, 0, 6890 * sizeof(int16_t));
+            fclose(wave_file);
             i2s_zero_dma_buffer(I2S_NUM_0);
+            i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
             keyOK = false;
             MenuPos = 0;
             view_mode = false;
@@ -1937,7 +1993,7 @@ void comp_wave_ofst() {
     }
 */
     for (uint8_t i = 1; i < 33; i++) {
-        printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
+        // printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
         wav_ofst[i+1] += (wav_ofst[i] + wave_info[i][0]);
     }
 }
@@ -2098,12 +2154,11 @@ void setup()
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
     xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(&display, "wave_view", 7000, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     printf("MAIN EXIT\n");
 }
-/*
+
 void loop() {
     printf("DELETE LOOP\n");
     vTaskDelete(NULL);
 }
-*/

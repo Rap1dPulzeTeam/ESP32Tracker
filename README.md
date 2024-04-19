@@ -1,10 +1,10 @@
-**ESP32Tracker**
+# ESP32 MOD Player
 
 ---
 
 ESP32Tracker is a Tracker-style sound creation tool based on ESP32S3 N16R8. You can use the built-in sampler and track editor to manipulate samples or perform other processing. This project is under development!
 
-### Features:
+## Features
 
 | Feature                           | Status |
 |-----------------------------------|--------|

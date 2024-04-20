@@ -324,7 +324,7 @@ void display(void *arg) {
                 ssd1306_display_text(&dev, 6, ten, 16, false);
                 if (!mute[0]) {
                 for (x = 0; x < 32; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[0]) {
                         //_ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
@@ -341,7 +341,7 @@ void display(void *arg) {
                 }
                 if (!mute[1]) {
                 for (x = 32; x < 64; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[1]) {
                         //_ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
@@ -357,7 +357,7 @@ void display(void *arg) {
                 }
                 if (!mute[2]) {
                 for (x = 64; x < 96; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[2]) {
                         //_ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
@@ -373,7 +373,7 @@ void display(void *arg) {
                 }
                 if (!mute[3]) {
                 for (x = 96; x < 128; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 512) + 32)&63, false);
+                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[3]) {
                         //_ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
@@ -742,7 +742,7 @@ void MainPage() {
         frame.print(song_name);
         if (windowsClose) {
             windowsClose = false;
-            frame.fillRect(0, 24, 160, 28, ST7735_BLACK);
+            frame.fillRect(0, 24, 160, 30, ST7735_BLACK);
             frame.fillRect(113, 19, 47, 7, 0xa514);
 
             // SIDE MENU
@@ -1521,7 +1521,7 @@ void comp(void *arg) {
                                 // printf(" + %d = %d\n", SlideDown[chl], period[chl]);
                             }
                             vol[chl] += (volUp[chl] - volDown[chl]);
-                            vol[chl] = (vol[chl] > 63) ? 63 : (vol[chl] < 1) ? 0 : vol[chl];
+                            vol[chl] = (vol[chl] > 64) ? 64 : (vol[chl] < 1) ? 0 : vol[chl];
 
                             VibratoItem[chl] = enbVibrato[chl] ? (sine_table[VibratoPos[chl]] * VibratoDepth[chl]) / 128 : 0;
                             VibratoPos[chl] = enbVibrato[chl] ? (VibratoPos[chl] + VibratoSpeed[chl]) & 63 : 0;

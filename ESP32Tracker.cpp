@@ -12,7 +12,6 @@
 #include <math.h>
 #include <esp_log.h>
 #include "ssd1306.h"
-// #include "font8x8_basic.h"
 #include "vol_table.h"
 #include <string.h>
 #include "esp32-hal-cpu.h"
@@ -24,7 +23,6 @@
 #include "NULL_MOD.h"
 #include "driver/i2s.h"
 #include "driver/gpio.h"
-// #include "esp_debug_helpers.h"
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -73,35 +71,35 @@ class  aFrameBuffer : public Adafruit_GFX {
     uint16_t lcd_buffer[40960];
     aFrameBuffer(int16_t w, int16_t h): Adafruit_GFX(w, h)
     {
-      // lcd_buffer = (uint16_t*)malloc(2 * h * w);
-      for (int i = 0; i < h * w; i++)
+    // lcd_buffer = (uint16_t*)malloc(2 * h * w);
+        for (int i = 0; i < h * w; i++)
         lcd_buffer[i] = 0;
     }
     void drawPixel( int16_t x, int16_t y, uint16_t color)
     {
-      if (x > 159)
-        return;
-      if (x < 0)
-        return;
-      if (y > 127)
-        return;
-      if (y < 0)
-        return;
-      lcd_buffer[x + y * _width] = color;
+        if (x > 159)
+            return;
+        if (x < 0)
+            return;
+        if (y > 127)
+            return;
+        if (y < 0)
+            return;
+        lcd_buffer[x + y * _width] = color;
     }
 
     void display()
     {
-      tft.setAddrWindow(0, 0, 160, 128);
-      digitalWrite(TFT_DC, HIGH);
-      digitalWrite(TFT_CS, LOW);
-      SPI.beginTransaction(SPISettings(78000000, MSBFIRST, SPI_MODE0));
-      for (uint16_t i = 0; i < 160 * 128; i++)
-      {
-        SPI.transfer16(lcd_buffer[i]);
-      }
-      SPI.endTransaction();
-      digitalWrite(TFT_CS, HIGH);
+        tft.setAddrWindow(0, 0, 160, 128);
+        digitalWrite(TFT_DC, HIGH);
+        digitalWrite(TFT_CS, LOW);
+        SPI.beginTransaction(SPISettings(78000000, MSBFIRST, SPI_MODE0));
+        for (uint16_t i = 0; i < 160 * 128; i++)
+        {
+            SPI.transfer16(lcd_buffer[i]);
+        }
+        SPI.endTransaction();
+        digitalWrite(TFT_CS, HIGH);
     }
 };
 
@@ -459,24 +457,6 @@ bool loadOk = true;
 
 bool skipToNextPart = false;
 uint8_t skipToAnyPart = false;
-/*
-#define DELAY_LENGTH 6144
-#define DECAY_FACTOR 0.45f
-
-int8_t delay_buffer[DELAY_LENGTH] = {0};
-uint32_t delay_index = 0;
-
-void apply_delay(int8_t *buffer, uint16_t buf_size) {
-    int8_t delayed_audio;
-
-    for(uint16_t i = 0; i < buf_size; i++) {
-        delayed_audio = delay_buffer[delay_index];
-        buffer[i] += delayed_audio;
-        delay_buffer[delay_index] = (int8_t)(buffer[i] * DECAY_FACTOR);
-        delay_index = (delay_index + 1) % DELAY_LENGTH;
-    }
-}
-*/
 bool lcdOK = true;
 uint8_t BPM = 125;
 uint8_t SPD = 6;
@@ -523,12 +503,17 @@ const char* findNote(int frequency) {
     }
     return "???";
 }
-const char* fileSelet(const char* root_path) {
+const char* fileSelect(const char* root_path) {
+    char path[256];
+    uint8_t path_depth = 0;
     int16_t SelPos = 0;
     uint8_t pg = 0;
     FileInfo* files = NULL;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
-    int count = list_directory(root_path, &files);
+    sprintf(path, "%s", root_path);
+    printf("%s\n", path);
+    int count = list_directory(path, &files);
+    bool emyDir = false;
     for (;;) {
         char* showBuf;
         frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -539,7 +524,7 @@ const char* fileSelet(const char* root_path) {
             frame.printf("Failed to list directory.\n");
             return "FAIL";
         }
-        showBuf = shortenFileName(root_path, 12);
+        showBuf = shortenFileName(path, 12);
         // shortenFileName(root_path, 12, showBuf);
         frame.printf("%s: %d FILE/DIR\n", showBuf, count);
         free(showBuf);
@@ -547,18 +532,26 @@ const char* fileSelet(const char* root_path) {
         frame.drawFastHLine(0, 27, 160, 0xa6bf);
         frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
         frame.drawFastVLine(134, 28, 100, 0xa6bf);
-        pg = SelPos / 10;
-        for (uint16_t i = 0; i < 10; i++) {
-            uint16_t showPos = i+(pg*10);
-            if (showPos >= count) {
-                break;
+        if (count) {
+            pg = SelPos / 10;
+            for (uint16_t i = 0; i < 10; i++) {
+                uint16_t showPos = i+(pg*10);
+                if (showPos >= count) {
+                    break;
+                }
+                showBuf = shortenFileName(files[showPos].name, 22);
+                frame.printf("%s", showBuf);
+                frame.setCursor(138, frame.getCursorY());
+                frame.printf("%s\n", files[showPos].is_directory ? "DIR" : "FIL");
+                frame.setCursor(frame.getCursorX(), frame.getCursorY()+2);
+                free(showBuf);
             }
-            showBuf = shortenFileName(files[showPos].name, 22);
-            frame.printf("%s", showBuf);
-            frame.setCursor(138, frame.getCursorY());
-            frame.printf("%s\n", files[showPos].is_directory ? "DIR" : "FIL");
+        } else {
+            frame.printf("Empty directory\n");
             frame.setCursor(frame.getCursorX(), frame.getCursorY()+2);
-            free(showBuf);
+            frame.printf("..");
+            SelPos = 1;
+            emyDir = true;
         }
         frame.display();
         vTaskDelay(2);
@@ -579,7 +572,31 @@ const char* fileSelet(const char* root_path) {
         }
         if (keyOK) {
             keyOK = false;
-            break;
+            if (emyDir) {
+                char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
+                if (lastSlash != NULL) {
+                    *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                }
+                emyDir = false;
+                count = list_directory(path, &files);
+                printf("%s\n", path);
+                SelPos = 0;
+                continue;
+            }
+            if (files[SelPos].is_directory) {
+                if (strlen(path)+strlen(files[SelPos].name) > 255) {
+                    printf("PATH TO LONG\n");
+                    continue;
+                }
+                path_depth++;
+                printf("PATH %p\n", path);
+                strcat(path, "/");
+                strcat(path, files[SelPos].name);
+                count = list_directory(path, &files);
+                printf("%s\n", path);
+            } else {
+                break;
+            }
         }
     }
     fillMidRect(80, 20, 0x4208);
@@ -591,14 +608,15 @@ const char* fileSelet(const char* root_path) {
     frame.setTextColor(ST7735_WHITE);
     frame.printf("READING...");
     frame.display();
-    char* full_path = (char*)malloc(strlen(files[SelPos].name) + strlen(root_path) + 2);
-    sprintf(full_path, "%s/%s", root_path, files[SelPos].name);
+    char* full_path = (char*)malloc(strlen(files[SelPos].name) + strlen(path) + 2);
+    sprintf(full_path, "%s/%s", path, files[SelPos].name);
     for (uint16_t i = 0; i < count; i++) {
         free(files[i].name);
     }
     free(files);
     return full_path;
 }
+
 void drawMidRect(uint8_t w, uint8_t h, uint16_t color) {
     frame.drawRect(80-(w>>1), 64-(h>>1), (80+(w>>1))-(80-(w>>1)), (64+(h>>1))-(64-(h>>1)), color);
 }
@@ -636,7 +654,7 @@ uint8_t showTmpEFX2_2;
 
 inline void fileOpt() {
     for (;;) {
-        long ret = read_tracker_file(fileSelet("/sdcard"));
+        long ret = read_tracker_file(fileSelect("/sdcard"));
         if (ret == -1) {
             frame.fillRect(0, 0, 160, 128, ST7735_BLACK);
             frame.setTextSize(3);
@@ -1286,7 +1304,7 @@ void Setting() {
             FILE *wave_file;
             size_t bytes_read;
             view_mode = true;
-            const char *wave_file_name = fileSelet("/sdcard");
+            const char *wave_file_name = fileSelect("/sdcard");
             wave_file = fopen(wave_file_name, "rb");
             WavHeader_t header;
             parseWavHeader(wave_file, &header);
@@ -2055,7 +2073,7 @@ void input(void *arg) {
 void setup()
 {
     esp_err_t ret;
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "ffat",

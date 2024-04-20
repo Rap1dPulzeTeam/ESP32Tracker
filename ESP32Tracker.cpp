@@ -288,7 +288,7 @@ void display(void *arg) {
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
     // bool bs = 0;
-    ssd1306_display_text(&dev, 2, "LOADING....", 14, false);
+    ssd1306_display_text(&dev, 2, (char *)"LOADING....", 14, false);
     vTaskDelay(2);
     //for (;;) {
     //    vTaskDelay(2);
@@ -303,7 +303,7 @@ void display(void *arg) {
         if (view_mode) {
             for (uint8_t ct = 0; ct < 16; ct++) {
                 ssd1306_clear_buffer(&dev);
-                ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
+                ssd1306_display_text(&dev, 0, (char *)"VIEW MODE", 10, false);
                 for (uint16_t x = 0; x < 128; x++) {
                     _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
                     _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
@@ -320,7 +320,7 @@ void display(void *arg) {
                 addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
                 addr[3] = data_index[3] * (32.0f / wave_info[smp_num[3]][0]);
                 // ssd1306_display_text(&dev, 7, tet, 16, false);
-                ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
+                ssd1306_display_text(&dev, 0, (char *)"CH1 CH2 CH3 CH4", 16, false);
                 ssd1306_display_text(&dev, 6, ten, 16, false);
                 if (!mute[0]) {
                 for (x = 0; x < 32; x++) {
@@ -499,8 +499,8 @@ bool partDOWN = false;
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
 typedef struct {
-    int frequency;
-    char *note_name;
+    const int frequency;
+    const char *note_name;
 } Note;
 Note period_table[NUM_RANGES][NOTES_PER_RANGE] = {
     // C-1 to B-1
@@ -513,7 +513,7 @@ Note period_table[NUM_RANGES][NOTES_PER_RANGE] = {
     {{214, "C-3"}, {202, "C#3"}, {190, "D-3"}, {180, "D#3"}, {170, "E-3"}, {160, "F-3"},
         {151, "F#3"}, {143, "G-3"}, {135, "G#3"}, {127, "A-3"}, {120, "A#3"}, {113, "B-3"}}
 };
-char* findNote(int frequency) {
+const char* findNote(int frequency) {
     for (int i = 0; i < NUM_RANGES; ++i) {
         for (int j = 0; j < NOTES_PER_RANGE; ++j) {
             if (period_table[i][j].frequency == frequency) {
@@ -523,7 +523,7 @@ char* findNote(int frequency) {
     }
     return "???";
 }
-char* fileSelet(const char* root_path) {
+const char* fileSelet(const char* root_path) {
     int16_t SelPos = 0;
     uint8_t pg = 0;
     FileInfo* files = NULL;
@@ -670,7 +670,7 @@ inline void fileOpt() {
     }
 }
 
-inline void windowsMenu(const char *title, uint8_t current_option, uint8_t total_options, uint8_t Xlen, ...) {
+void windowsMenu(const char *title, uint8_t current_option, uint8_t total_options, uint8_t Xlen, ...) {
     va_list args;
     va_start(args, total_options);
     uint8_t OriginX = frame.getCursorX();

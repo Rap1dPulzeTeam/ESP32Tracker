@@ -423,55 +423,21 @@ void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_t part_
 // AUDIO DATA COMP START ----------------------------------------
 uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
-int8_t sample1;
-int8_t sample2;
 int8_t lastVol[4];
-/*
-inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size) {
-    if (vole == 0 || freq < 0 || mute[chl]) {
-        return 0;
-    }
-    // 更新通道的数据索引
-    data_index_int[chl] = roundf(data_index[chl]);
-    data_index[chl] += freq / SMP_RATE;
-    // 检查是否启用了循环
-    if (isLoop) {
-        // 如果启用了循环，则调整索引
-        if (data_index_int[chl] >= (loopStart + loopLen)) {
-            // data_index[chl] = data_index[chl] - data_index_int[chl];
-            data_index[chl] = loopStart;
-            data_index_int[chl] = loopStart;
-        }
-    } else {
-        // 检查是否到达了样本的末尾
-        if (data_index_int[chl] >= smp_size) {
-            // 将音量标记为0并返回
-            vol[chl] = 0;
-            return 0;
-        }
-    }
-    // 处理音频数据并应用音量调整
-    return (float)((int8_t)tracker_data[data_index_int[chl] + smp_start] << 6) * vol_table[vole];
-}
-*/
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline) {
     if (vole == 0 || freq <= 0 || mute[chl]) {
         return 0;
     }
 
-    // 更新通道的数据索引
     data_index[chl] += freq / SMP_RATE;
 
-    // 检查是否启用了循环
     if (isLoop && data_index[chl] >= (loopStart + loopLen)) {
-        // data_index[chl] -= data_index[chl] - loopStart;
         data_index[chl] = loopStart;
     } else if (!isLoop && data_index[chl] >= smp_size) {
         vol[chl] = 0;
         return 0;
     }
 
-    // 插值处理
     float sample1 = (float)((int8_t)tracker_data[(int)data_index[chl] + smp_start] << 6) * vol_table[vole];
     float sample2 = 0.0f;
 

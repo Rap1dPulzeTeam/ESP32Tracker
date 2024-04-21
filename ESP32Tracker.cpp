@@ -27,6 +27,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
+#include "write_wav.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -40,6 +41,9 @@ void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
 void read_pattern_table();
 void read_wave_info();
 void comp_wave_ofst();
+bool recMod = false;
+FILE *export_wav_file; // WAV文件指针
+size_t export_wav_written = 0; // 已写入的数据量
 
 /*
 #define HSPI_MISO 16 //19 
@@ -49,22 +53,6 @@ void comp_wave_ofst();
 */
 // Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-
-typedef struct {
-    char     chunkID[4];     // "RIFF"
-    uint32_t chunkSize;      // 文件大小
-    char     format[4];      // "WAVE"
-    char     subchunk1ID[4]; // "fmt "
-    uint32_t subchunk1Size;  // 子块1大小
-    uint16_t audioFormat;    // 音频格式
-    uint16_t numChannels;    // 声道数
-    uint32_t sampleRate;     // 采样率
-    uint32_t byteRate;       // 码率
-    uint16_t blockAlign;     // 数据块对齐
-    uint16_t bitsPerSample;  // 位深度
-    char     subchunk2ID[4]; // "data"
-    uint32_t subchunk2Size;  // 子块2大小
-} WavHeader_t;
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -813,10 +801,9 @@ void MainPage() {
                 frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0x2945);
             }
         }
-        // frame.fillRect(0, 56, 155, 72, 0x2945);
+
         frame.drawRect(0, 87, 160, 9, 0xd69a);
-        // frame.drawRect(1, 89, 160, 8, 0x7bcf);
-        // printf("%d %d\n", i, tracker_point+i);
+
         frame.setCursor(116, 29);
         frame.fillRect(115, 28, 21, 25, 0x2104);
         if (sideMenu == 4) {
@@ -946,7 +933,14 @@ void MainPage() {
                         break;
                     }
                     if (fileMenu == 3) {
+                        playStat = false;
+                        recMod = true;
                         printf("SAVE!\n");
+                        vTaskDelay(8);
+                        // memset(buffer, 0, 6892 * sizeof(int16_t));
+                        export_wav_file = wav_audio_start("/sdcard/output.wav", 44100, 16, 2);
+                        vTaskDelay(8);
+                        playStat = true;
                     }
                     if (fileMenu == 2) {
                         loadOk = false;
@@ -1038,29 +1032,6 @@ void MainPage() {
         frame.printf("SAMP");}
 
         if (ChlMenuPos) {
-            /*
-            fillMidRect(90, 50, 0x4208);
-            drawMidRect(90, 50, ST7735_WHITE);
-            frame.setTextColor(0x7bcf);
-            setMidCusr(90, 50, 3);
-            frame.printf("CHL%d OPTION", ChlPos);
-            frame.setTextColor(ST7735_WHITE);
-            setMidCusr(90, 50, 2);
-            frame.printf("CHL%d OPTION\n", ChlPos);
-            setMidCusr(90, 50, 2);
-            uint8_t CXTmp = frame.getCursorX()+4;
-            frame.setCursor(CXTmp, frame.getCursorY()+14);
-            frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((ChlMenuPos-1)*11), 72, 11, 0x7bef);
-            if (mute[ChlPos-1]) {
-                frame.printf("unMute\n");
-            } else {
-                frame.printf("Mute\n");
-            }
-            frame.setCursor(CXTmp, frame.getCursorY()+3);
-            frame.printf("CHL Editer\n", ChlPos);
-            frame.setCursor(CXTmp, frame.getCursorY()+3);
-            frame.printf("Close");
-            */
             char menuShow[13];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
             windowsMenu(menuShow, ChlMenuPos, 3, 90, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
@@ -1172,20 +1143,8 @@ void ChlEdit() {
         frame.printf("VOLE:%d\nPROD:%d\nFREQ:%.1f\n", vol[ChlPos-1], period[ChlPos-1], frq[ChlPos-1]);
         frame.setTextColor(0x8410);
         frame.printf("SAMP INFO\nNAME:\n%s\nNUM: %d\nLEN: %d\nPAT: %d\nVOL: %d", samp_name[smp_num[ChlPos-1]], smp_num[ChlPos-1], wave_info[smp_num[ChlPos-1]][0], wave_info[smp_num[ChlPos-1]][1], wave_info[smp_num[ChlPos-1]][2]);
-        // frame.fillRect(80, 0, 80, 128, 0x2945);
-        /*
-        for (uint8_t x = 1; x < 5; x++) {
-            if (ChlPos == x) {
-                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0x630c);
-            } else if (mute[x-1]) {
-                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0xa514);
-            } else {
-                frame.fillRect(((x-1)*36)+15, 56, 33, 72, 0x2945);
-            }
-        }
-        */
+
         vTaskDelay(2);
-        // frame.fillRect(80, 55, 80, 9, 0x630c);
 
         // HIGH LIGHT
         if (EditPos == 0) {
@@ -1518,7 +1477,11 @@ void comp(void *arg) {
                 Mtick+=4;
                 if (Mtick == (TICK_NUL<<2)) {
                     // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
-                    i2s_write(I2S_NUM_0, &buffer, Mtick, &wrin, portMAX_DELAY);
+                    if (recMod) {
+                        wav_audio_write(buffer, Mtick, &wrin, export_wav_file);
+                    } else {
+                        i2s_write(I2S_NUM_0, &buffer, Mtick, &wrin, portMAX_DELAY);
+                    }
                     Mtick = 0;
                     tick_time++;
                     arp_p++;
@@ -1776,6 +1739,9 @@ void comp(void *arg) {
                             printf("SKIP TO %d\n", rowLoopStart);
                         }
                         if ((tracker_point > 63) || skipToNextPart || skipToAnyPart) {
+                            if (recMod) {
+                                fflush(export_wav_file);
+                            }
                             if (skipToRow) {
                                 tracker_point = skipToRow;
                                 skipToRow = 0;
@@ -1785,6 +1751,11 @@ void comp(void *arg) {
                             showPart++;
                             if (showPart >= NUM_PATTERNS) {
                                 showPart = 0;
+                                if (recMod) {
+                                    wav_audio_close(export_wav_file);
+                                    recMod = false;
+                                    playStat = false;
+                                }
                             }
                             if (skipToAnyPart) {
                                 part_point = showPart = skipToAnyPart;

@@ -221,8 +221,9 @@ long read_tracker_file(const char* path) {
     long file_size;
     if (tracker_data != NULL) {
         free(tracker_data);
+        printf("FREE MEM\n");
+        tracker_data = NULL;
     }
-    printf("FREE MEM\n");
     tracker_data = read_file(path, &file_size);
     printf("READ FINISH\n");
     if ((tracker_data == NULL) || (file_size == 0)) {
@@ -312,7 +313,8 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 2; contr++) {
                 ssd1306_clear_buffer(&dev);
-                sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
+                sprintf(ten, " %d", esp_get_free_heap_size());
+                // sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
                 addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
                 addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
                 addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
@@ -546,7 +548,7 @@ const char* fileSelect(const char* root_path) {
                 frame.setCursor(frame.getCursorX(), frame.getCursorY()+2);
                 free(showBuf);
             }
-        } else {
+        } else {            
             frame.printf("Empty directory\n");
             frame.setCursor(frame.getCursorX(), frame.getCursorY()+2);
             frame.printf("..");
@@ -555,7 +557,26 @@ const char* fileSelect(const char* root_path) {
         }
         frame.display();
         vTaskDelay(2);
-        keyL = keyR = playStat = false;
+        keyR = playStat = false;
+        if (keyL) {
+            keyL = false;
+            if (path_depth > 0) {
+                for (uint16_t i = 0; i < count; i++) {
+                    free(files[i].name);
+                }
+                free(files);
+                files = NULL;
+                char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
+                if (lastSlash != NULL) {
+                    *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                }
+                emyDir = false;
+                count = list_directory(path, &files);
+                printf("%s\n", path);
+                path_depth--;
+                SelPos = 0;
+            }
+        }
         if (keyUP) {
             keyUP = false;
             SelPos--;
@@ -581,6 +602,7 @@ const char* fileSelect(const char* root_path) {
                 count = list_directory(path, &files);
                 printf("%s\n", path);
                 SelPos = 0;
+                path_depth--;
                 continue;
             }
             if (files[SelPos].is_directory) {
@@ -590,8 +612,14 @@ const char* fileSelect(const char* root_path) {
                 }
                 path_depth++;
                 printf("PATH %p\n", path);
-                strcat(path, "/");
-                strcat(path, files[SelPos].name);
+                sprintf(path, "%s/%s", path, files[SelPos].name);
+                // strcat(path, "/");
+                // strcat(path, files[SelPos].name);
+                for (uint16_t i = 0; i < count; i++) {
+                    free(files[i].name);
+                }
+                free(files);
+                files = NULL;
                 count = list_directory(path, &files);
                 printf("%s\n", path);
             } else {
@@ -614,6 +642,7 @@ const char* fileSelect(const char* root_path) {
         free(files[i].name);
     }
     free(files);
+    files = NULL;
     return full_path;
 }
 
@@ -656,26 +685,29 @@ inline void fileOpt() {
     for (;;) {
         long ret = read_tracker_file(fileSelect("/sdcard"));
         if (ret == -1) {
-            frame.fillRect(0, 0, 160, 128, ST7735_BLACK);
-            frame.setTextSize(3);
-            frame.setTextColor(0xf986);
-            frame.setCursor(4, 8);
-            frame.printf("!");
+            fillMidRect(148, 20, 0x4208);
+            drawMidRect(148, 20, ST7735_WHITE);
+            setMidCusr(148, 20, 7);
+            frame.setTextColor(0x7bcf);
+            frame.printf("THIS IS NOT A MOD FILE!");
+            setMidCusr(148, 20, 6);
             frame.setTextColor(ST7735_WHITE);
-            frame.setTextSize(0);
-            frame.setCursor(10, 40);
-            frame.printf("LOAD ERROR!\n");
-            frame.setCursor(10, frame.getCursorY());
-            frame.printf("THIS IS\n");
-            frame.setCursor(10, frame.getCursorY());
-            frame.setTextColor(0xf986);
-            frame.setTextSize(2);
-            frame.printf("NOT\n");
-            frame.setTextSize(0);
+            frame.printf("THIS IS NOT A MOD FILE!");
+            frame.display();
+            while(!keyOK) {
+                vTaskDelay(4);
+            }
+            keyOK = false;
+            MainReDraw();
+        } else if (ret == 0) {
+            fillMidRect(148, 20, 0x4208);
+            drawMidRect(148, 20, ST7735_WHITE);
+            setMidCusr(148, 20, 7);
+            frame.setTextColor(0x7bcf);
+            frame.printf("THIS FILE IS TOO LARGE!");
+            setMidCusr(148, 20, 6);
             frame.setTextColor(ST7735_WHITE);
-            frame.setCursor(10, frame.getCursorY());
-            frame.printf("A MOD FILE!\n");
-            frame.setCursor(10, frame.getCursorY());
+            frame.printf("THIS FILE IS TOO LARGE!");
             frame.display();
             while(!keyOK) {
                 vTaskDelay(4);
@@ -2073,7 +2105,7 @@ void input(void *arg) {
 void setup()
 {
     esp_err_t ret;
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "ffat",

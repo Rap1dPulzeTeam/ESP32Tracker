@@ -18,7 +18,7 @@ int list_directory(const char* path, FileInfo** files) {
     int count = 0;
     while ((entry = readdir(dir)) != NULL) {
         // 跳过 "." 和 ".."
-        if (strcmp(entry->d_name, ".") == 0) {// || strcmp(entry->d_name, "..") == 0) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
 

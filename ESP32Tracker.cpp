@@ -28,6 +28,7 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "write_wav.h"
+#include "esp_dsp.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -857,9 +858,9 @@ void MainPage() {
         }
         frame.setTextColor(ST7735_WHITE);
 
-        frame.fillRect(1, 20, 64, 18, ST7735_BLACK);
+        frame.fillRect(1, 20, 80, 18, ST7735_BLUE);
         frame.setCursor(1, 20);
-        frame.printf("BPM: %d", BPM);
+        frame.printf("BPM: %d %d %d", BPM, part_buffer_point, part_point);
 
         frame.setCursor(1, 28);
         frame.printf("SPD: %d", SPD);
@@ -938,8 +939,11 @@ void MainPage() {
                         printf("SAVE!\n");
                         vTaskDelay(8);
                         // memset(buffer, 0, 6892 * sizeof(int16_t));
-                        export_wav_file = wav_audio_start("/sdcard/output.wav", 44100, 16, 2);
+                        char *export_wave_name = (char*)malloc(strlen(song_name)+32);
+                        sprintf(export_wave_name, "/sdcard/%s_record.wav", song_name);
+                        export_wav_file = wav_audio_start(export_wave_name, 44100, 16, 2);
                         vTaskDelay(8);
+                        free(export_wave_name);
                         playStat = true;
                     }
                     if (fileMenu == 2) {
@@ -1479,6 +1483,7 @@ void comp(void *arg) {
                     // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
                     if (recMod) {
                         wav_audio_write(buffer, Mtick, &wrin, export_wav_file);
+                        printf("WRIN %d\n", wrin);
                     } else {
                         i2s_write(I2S_NUM_0, &buffer, Mtick, &wrin, portMAX_DELAY);
                     }
@@ -1754,7 +1759,6 @@ void comp(void *arg) {
                                 if (recMod) {
                                     wav_audio_close(export_wav_file);
                                     recMod = false;
-                                    playStat = false;
                                 }
                             }
                             if (skipToAnyPart) {
@@ -1808,6 +1812,11 @@ void comp(void *arg) {
                     BPM = 125;
                     data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
                     Mtick = 0;
+                    if (recMod) {
+                        wav_audio_close(export_wav_file);
+                        recMod = false;
+                        playStat = false;
+                    }
                     break;
                 }
             }
@@ -2080,13 +2089,13 @@ void setup()
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "ffat",
-        .max_files = 4,
+        .max_files = 2,
         .format_if_mount_failed = true
     };
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 4,
+        .max_files = 2,
         .allocation_unit_size = 16 * 1024
     };
     sdmmc_card_t *card;

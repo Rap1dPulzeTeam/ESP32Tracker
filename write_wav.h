@@ -53,7 +53,7 @@ FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, u
 // 将缓冲区写入WAV文件
 void wav_audio_write(void *inbuf, size_t len, size_t *bytes_written, FILE *file) {
     // 写入数据
-    *bytes_written = fwrite((uint8_t *)inbuf, sizeof(uint8_t), len, file);
+    *bytes_written = fwrite(inbuf, sizeof(char), len, file);
 
     // 更新subchunk2Size字段
     fseek(file, 40, SEEK_SET);  // subchunk2Size偏移量为40
@@ -62,6 +62,7 @@ void wav_audio_write(void *inbuf, size_t len, size_t *bytes_written, FILE *file)
 
     // 回到文件末尾
     fseek(file, 0, SEEK_END);
+    // fflush(file);
 }
 
 // 关闭WAV文件

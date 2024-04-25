@@ -384,27 +384,39 @@ void display(void *arg) {
 }
 // OSC END -------------------------------------------------------
 
-void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_t part_data[NUM_ROWS][NUM_CHANNELS][4]) {
+inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_t part_data[NUM_ROWS][NUM_CHANNELS][4]) {
 //    int pattern_index = tracker_data[952 + part_number];
     uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
 
     for (int row_index = 0; row_index < NUM_ROWS; row_index++) {
         for (int channel_index = 0; channel_index < NUM_CHANNELS; channel_index++) {
             int byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
+            // Byte structure for tracker data:
+            // +----------------+--------------+----------------+-------------+
+            // |    byte 1      |    byte 2    |     byte 3     |    byte 4   |
+            // |----------------|--------------|----------------|-------------|
+            // | 0000      0000 | 00000000     | 0000      0000 | 00000000    |
+            // |________________|______________|________________|_____________|
+            // | Upper four     | 12 bits for  | Lower four     | Effect      |
+            // | bits of sample | note period. | bits of sample | command.    |
+            // | number.        |              | number.        |             |
+            // +----------------+--------------+----------------+-------------+
+
             uint8_t byte1 = pattern_data[byte_index];
             uint8_t byte2 = pattern_data[byte_index + 1];
             uint8_t byte3 = pattern_data[byte_index + 2];
             uint8_t byte4 = pattern_data[byte_index + 3];
 
-            uint8_t sample_number = (byte1 & 0xF0) | (byte3 >> 4);
-            uint16_t period = ((byte1 & 0x0F) << 8) | byte2;
-            uint8_t effect1 = (byte3 & 0x0F);
-            uint8_t effect2 = byte4;
-
-            part_data[row_index][channel_index][0] = period;
-            part_data[row_index][channel_index][1] = sample_number;
-            part_data[row_index][channel_index][2] = effect1;
-            part_data[row_index][channel_index][3] = effect2;
+            // part_data[ROW][CHAN][NOTE_DATA]
+            //                          |
+            //                          |- 0: Amiga period
+            //                          |- 1: Sample number
+            //                          |- 2: Effect1 (Eee)
+            //                          +- 3: Effect2 (eEE)
+            part_data[row_index][channel_index][0] = ((byte1 & 0x0F) << 8) | byte2;
+            part_data[row_index][channel_index][1] = (byte1 & 0xF0) | (byte3 >> 4);
+            part_data[row_index][channel_index][2] = (byte3 & 0x0F);
+            part_data[row_index][channel_index][3] = byte4;
         }
     }
 }
@@ -1472,10 +1484,10 @@ void comp(void *arg) {
                 }
                 audio_tempL = (int16_t)
                         roundf(buffer_ch[0][Mtick>>1]
-                                + buffer_ch[1][Mtick>>1]);
-                audio_tempR = (int16_t)
-                        roundf(buffer_ch[2][Mtick>>1]
                                 + buffer_ch[3][Mtick>>1]);
+                audio_tempR = (int16_t)
+                        roundf(buffer_ch[1][Mtick>>1]
+                                + buffer_ch[2][Mtick>>1]);
                 buffer[Mtick>>1] = audio_tempL;
                 buffer[(Mtick>>1)+1] = audio_tempR;
                 Mtick+=4;

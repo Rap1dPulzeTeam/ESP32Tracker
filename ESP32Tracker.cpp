@@ -29,6 +29,8 @@
 #include "driver/sdmmc_host.h"
 #include "write_wav.h"
 #include "esp_dsp.h"
+#include "ESPRotary.h"
+#include "8_bit_hud5pt7b.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -45,6 +47,7 @@ void comp_wave_ofst();
 bool recMod = false;
 FILE *export_wav_file; // WAV文件指针
 size_t export_wav_written = 0; // 已写入的数据量
+uint8_t noteKeyStatus = 0;
 
 /*
 #define HSPI_MISO 16 //19 
@@ -54,6 +57,7 @@ size_t export_wav_written = 0; // 已写入的数据量
 */
 // Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+ESPRotary rotary;
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -82,7 +86,7 @@ class  aFrameBuffer : public Adafruit_GFX {
         tft.setAddrWindow(0, 0, 160, 128);
         digitalWrite(TFT_DC, HIGH);
         digitalWrite(TFT_CS, LOW);
-        SPI.beginTransaction(SPISettings(78000000, MSBFIRST, SPI_MODE0));
+        SPI.beginTransaction(SPISettings(79000000, MSBFIRST, SPI_MODE0));
         for (uint16_t i = 0; i < 160 * 128; i++)
         {
             SPI.transfer16(lcd_buffer[i]);
@@ -256,17 +260,17 @@ void load(void *arg);
 char ten[24];
 int8_t vol[CHL_NUM] = {0, 0, 0, 0};
 int16_t period[4] = {0, 0, 0, 0};
-float frq[4] = {0};
+float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 // uint16_t data_index_int[CHL_NUM] = {0};
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
 
 int16_t temp;
-uint16_t wave_info[33][5] = {0};
-uint32_t wav_ofst[34] = {0};
+uint16_t wave_info[33][5];
+uint32_t wav_ofst[34];
 int8_t showPart = 0;
-bool mute[4] = {false};
+bool mute[4] = {false, false, false, false};
 
 // OSC START -----------------------------------------------------
 void display(void *arg) {
@@ -316,7 +320,7 @@ void display(void *arg) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[0]) {
-                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
                     }
                     // printf("DISPLAY %d\n", roundf(period[0] * (64.0f / 743.0f)));
                     volTemp = (vol[0]/2) % 64;
@@ -333,7 +337,7 @@ void display(void *arg) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[1][((x-32) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[1]) {
-                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[1]/2;
                     _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
@@ -349,7 +353,7 @@ void display(void *arg) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[2][((x-64) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[2]) {
-                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[2]/2;
                     _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
@@ -365,7 +369,7 @@ void display(void *arg) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
                     // _ssd1306_pixel(&dev, x, ((buffer_ch[3][((x-96) + (contr * 128)) * 2]) / 256) + 32, false);
                     if (period[3]) {
-                        //_ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
                     }
                     volTemp = vol[3]/2;
                     _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
@@ -390,12 +394,12 @@ inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_
 
     for (int row_index = 0; row_index < NUM_ROWS; row_index++) {
         for (int channel_index = 0; channel_index < NUM_CHANNELS; channel_index++) {
-            int byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
+            uint16_t byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
             // Byte structure for tracker data:
             // +----------------+--------------+----------------+-------------+
             // |    byte 1      |    byte 2    |     byte 3     |    byte 4   |
             // |----------------|--------------|----------------|-------------|
-            // | 0000      0000 | 00000000     | 0000      0000 | 00000000    |
+            // | 0000       0000|00000000      | 0000       0000|00000000     |
             // |________________|______________|________________|_____________|
             // | Upper four     | 12 bits for  | Lower four     | Effect      |
             // | bits of sample | note period. | bits of sample | command.    |
@@ -421,15 +425,31 @@ inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_
     }
 }
 
+void write_part_data(uint8_t *tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint8_t row_data[4]) {
+    // 定位到起始位置
+    uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
+
+    // 计算特定行和通道在数据中的字节索引
+    uint16_t byte_index = row * NUM_CHANNELS * 4 + chl * 4;
+
+    // 写入数据
+    pattern_data[byte_index] = (row_data[1] & 0xF0) | ((row_data[0] >> 8) & 0x0F);
+    pattern_data[byte_index + 1] = row_data[0] & 0xFF;
+    pattern_data[byte_index + 2] = (row_data[1] << 4) | (row_data[2] & 0x0F);
+    pattern_data[byte_index + 3] = row_data[3];
+}
+
 // AUDIO DATA COMP START ----------------------------------------
 uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
 int8_t lastVol[4];
+float sin_index;
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline) {
     if (vole == 0 || freq <= 0 || mute[chl]) {
         return 0;
     }
-
+    // freq *= sinf(sin_index)*128;
+    // sin_index+=0.1; 
     data_index[chl] += freq / SMP_RATE;
 
     if (isLoop && data_index[chl] >= (loopStart + loopLen)) {
@@ -731,10 +751,16 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
     drawMidRect(Xlen, Ylen, ST7735_WHITE);
     frame.setTextColor(0x7bcf);
     setMidCusr(Xlen, Ylen, 3);
+    //frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
+    //frame.setFont(&u8_bit_hud5pt7b);
     frame.printf("%s", title);
+    //frame.setFont();
     frame.setTextColor(ST7735_WHITE);
     setMidCusr(Xlen, Ylen, 2);
+    //frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
+    //frame.setFont(&u8_bit_hud5pt7b);
     frame.printf("%s\n", title);
+    //frame.setFont();
     setMidCusr(Xlen, Ylen, 2);
     uint8_t CXTmp = frame.getCursorX()+4;
     frame.setCursor(CXTmp, frame.getCursorY()+14);
@@ -870,7 +896,7 @@ void MainPage() {
         }
         frame.setTextColor(ST7735_WHITE);
 
-        frame.fillRect(1, 20, 80, 18, ST7735_BLUE);
+        frame.fillRect(0, 19, 112, 21, 0x3186);
         frame.setCursor(1, 20);
         frame.printf("BPM: %d %d %d", BPM, part_buffer_point, part_point);
 
@@ -1276,7 +1302,7 @@ void ChlEdit() {
             keySpace = false;
             playStat = !playStat;
         }
-        vTaskDelay(2);
+        vTaskDelay(1);
     }
 }
 
@@ -1425,6 +1451,7 @@ void display_lcd(void *arg) {
     }
 }
 bool TestNote = false;
+uint8_t chlMap[CHL_NUM] = {/*L*/0, 3, /*R*/1, 2};
 // COMP TASK START ----------------------------------------------
 void comp(void *arg) {
     uint8_t tick_time = 0;
@@ -1474,6 +1501,10 @@ void comp(void *arg) {
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
+            SPD = 6;
+            tick_time = 0;
+            TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
+            Mtick = 0;
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (wave_info[smp_num[chl]][4] > 2) {
@@ -1483,11 +1514,11 @@ void comp(void *arg) {
                     }
                 }
                 audio_tempL = (int16_t)
-                        roundf(buffer_ch[0][Mtick>>1]
-                                + buffer_ch[3][Mtick>>1]);
+                        roundf(buffer_ch[chlMap[0]][Mtick>>1]
+                                + buffer_ch[chlMap[1]][Mtick>>1]);
                 audio_tempR = (int16_t)
-                        roundf(buffer_ch[1][Mtick>>1]
-                                + buffer_ch[2][Mtick>>1]);
+                        roundf(buffer_ch[chlMap[2]][Mtick>>1]
+                                + buffer_ch[chlMap[3]][Mtick>>1]);
                 buffer[Mtick>>1] = audio_tempL;
                 buffer[(Mtick>>1)+1] = audio_tempR;
                 Mtick+=4;
@@ -2024,8 +2055,28 @@ void read_wave_data(uint8_t (*wave_info)[5], uint8_t* tracker_data, uint8_t** wa
 #define TAG "TAG"
 const char* root_path = "/spiffs";
 
+void rotate(ESPRotary& rotary) {
+    printf("ROTARY %d\n", (int)rotary.getDirection());
+    if ((uint8_t)rotary.getDirection() == 255) {
+        keyUP = true;
+    }
+    if ((uint8_t)rotary.getDirection() == 1) {
+        keyDOWN = true;
+    }
+}
+
+void IRAM_ATTR setKeyOK() {
+    keyOK = true;
+}
+
 void input(void *arg) {
+    pinMode(21, INPUT_PULLUP);
+    rotary.begin(38, 39, 2);
+    rotary.setChangedHandler(rotate);
+    // rotary.setLeftRotationHandler(showDirection);
+    // rotary.setRightRotationHandler(showDirection);
     Serial.begin(115200);
+    attachInterrupt(21, setKeyOK, RISING);
     while (true) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
@@ -2069,10 +2120,10 @@ void input(void *arg) {
             if (received == 50) {
                 TestNote = true;
             }
-            if (received == 112) {
+            if (received == 107) {
                 vTaskPrioritySet(NULL, 5);
                 FileInfo* files = NULL;
-                int count = list_directory(root_path, &files);
+                int count = list_directory("/sdcard", &files);
                 if (count < 0) {
                     printf("Failed to list directory.\n");
                 }
@@ -2088,15 +2139,85 @@ void input(void *arg) {
             if (received == 109) {
                 printf("FREE MEM: %d\n", esp_get_free_heap_size());
             }
+            switch (received) {
+                case 101:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 1;}
+                    break;
+                case 52:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 2;}
+                    break;
+                case 114:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 3;}
+                    break;
+                case 53:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 4;}
+                    break;
+                case 116:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 5;}
+                    break;
+                case 121:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 6;}
+                    break;
+                case 55:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 7;}
+                    break;
+                case 117:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 8;}
+                    break;
+                case 56:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 9;}
+                    break;
+                case 105:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 10;}
+                    break;
+                case 57:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 11;}
+                    break;
+                case 111:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 12;}
+                    break;
+                case 112:
+                    if (noteKeyStatus)
+                         {noteKeyStatus = 0;}
+                    else {noteKeyStatus = 13;}
+                    break;
+            }
+            printf("NOTE KEY STAUS %d\n", noteKeyStatus);
             // Serial.flush();
         }
-        vTaskDelay(6);
+        vTaskDelay(2);
+        rotary.loop();
     }
 }
 
 void setup()
 {
     esp_err_t ret;
+
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
@@ -2104,7 +2225,6 @@ void setup()
         .max_files = 2,
         .format_if_mount_failed = true
     };
-
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 2,

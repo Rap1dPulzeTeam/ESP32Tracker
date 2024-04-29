@@ -31,6 +31,7 @@
 #include "esp_dsp.h"
 #include "ESPRotary.h"
 #include "8_bit_hud5pt7b.h"
+#include "audioTypedef.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -44,9 +45,19 @@ void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
 void read_pattern_table();
 void read_wave_info();
 void comp_wave_ofst();
+#define CHL_NUM 4
+#define TRACKER_ROW 64
+uint8_t NUM_PATTERNS;
+#define BUFFER_PATTERNS 2
+#define NUM_ROWS 64
+#define NUM_CHANNELS 4
+#define PATTERN_SIZE (NUM_ROWS * NUM_CHANNELS * 4)
+#define BUFF_SIZE 1024
+
 bool recMod = false;
 FILE *export_wav_file; // WAV文件指针
 size_t export_wav_written = 0; // 已写入的数据量
+void *export_wav_buffer;
 uint8_t noteKeyStatus = 0;
 
 /*
@@ -98,25 +109,16 @@ class  aFrameBuffer : public Adafruit_GFX {
 
 aFrameBuffer frame(160, 128);
 
-#define BUFF_SIZE 2048
 #define SMP_RATE 44100
 #define SMP_BIT 8
-float buffer_ch[4][6892];
-int16_t buffer[6892];
+float *buffer_ch[NUM_CHANNELS];
+void* buffer;
 float time_step = 1.0 / SMP_RATE;
 bool enbLine = false;
 
 size_t wrin;
 uint8_t stp;
 bool display_stat = true;
-
-#define CHL_NUM 4
-#define TRACKER_ROW 64
-uint8_t NUM_PATTERNS;
-#define BUFFER_PATTERNS 2
-#define NUM_ROWS 64
-#define NUM_CHANNELS 4
-#define PATTERN_SIZE (NUM_ROWS * NUM_CHANNELS * 4)
 
 uint8_t part_table[128];
 int8_t part_point = 2;
@@ -282,12 +284,12 @@ void display(void *arg) {
     // bool bs = 0;
     ssd1306_display_text(&dev, 2, (char *)"LOADING....", 14, false);
     vTaskDelay(2);
-    //for (;;) {
-    //    vTaskDelay(2);
-    //    if (dispRedy) {
-    //        break;
-    //    }
-    //}
+    for (;;) {
+        vTaskDelay(2);
+        if (dispRedy) {
+            break;
+        }
+    }
     for (;;) {
         uint8_t x;
         uint8_t volTemp;
@@ -297,14 +299,14 @@ void display(void *arg) {
                 ssd1306_clear_buffer(&dev);
                 ssd1306_display_text(&dev, 0, (char *)"VIEW MODE", 10, false);
                 for (uint16_t x = 0; x < 128; x++) {
-                    _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
-                    _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
+                    // _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
+                    // _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
                 }
                 ssd1306_show_buffer(&dev);
                 vTaskDelay(1);
             }
         } else {
-            for (uint8_t contr = 0; contr < 2; contr++) {
+            for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
                 sprintf(ten, " %d", esp_get_free_heap_size());
                 // sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
@@ -1323,92 +1325,127 @@ int parseWavHeader(FILE* file, WavHeader_t* header) {
     return 0;
 }
 
+void wav_player() {
+    playStat = false;
+    FILE *wave_file;
+    size_t bytes_read;
+    view_mode = true;
+    memset(buffer, 0, 6890 * sizeof(int16_t));
+    const char *wave_file_name = fileSelect("/sdcard");
+    wave_file = fopen(wave_file_name, "rb");
+    WavHeader_t header;
+    parseWavHeader(wave_file, &header);
+    printf("WAV File Information:\n");
+    printf("Sample Rate: %u Hz\n", header.sampleRate);
+    printf("Channels: %u\n", header.numChannels);
+    printf("Bits Per Sample: %u\n", header.bitsPerSample);
+    size_t writeing;
+    i2s_zero_dma_buffer(I2S_NUM_0);
+    i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
+    frame.fillScreen(ST7735_BLACK);
+    frame.setTextColor(ST7735_WHITE);
+    frame.setCursor(0, 0);
+    frame.printf("PLATING...\n\n\n\n\n");
+    frame.setTextColor(0x52aa);
+    frame.printf("WAV File Information:\nSample Rate: %u Hz\nBits Per Sample: %u\nChannels: %u", header.sampleRate, header.bitsPerSample, header.numChannels);
+    frame.setTextColor(ST7735_WHITE);
+    frame.display();
+    float i2s_vol = 1.0f;
+    uint16_t read_p;
+    uint8_t refs_p = 0;
+    while (!feof(wave_file)) {
+        read_p = fread(buffer, 2, 6890, wave_file)<<1;
+        for (uint16_t s = 0; s < read_p; s++) {
+            // buffer[s] *= i2s_vol;
+        }
+        i2s_write(I2S_NUM_0, buffer, read_p, &writeing, portMAX_DELAY);
+        // printf("%d\n", writeing);
+        if (keyL) {
+            keyL = false;
+            fseek(wave_file, -6890*16, SEEK_CUR);
+        }
+        if (keyR) {
+            keyR = false;
+            fseek(wave_file, 6890*16, SEEK_CUR);
+        }
+        if (keyUP) {
+            keyUP = false;
+            i2s_vol += 0.05;
+            printf("%.2f\n", i2s_vol);
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            i2s_vol -= 0.05;
+            printf("%.2f\n", i2s_vol);
+        }
+        if (keyOK) {
+            keyOK = false;
+            break;
+        }
+        refs_p++;
+        if (refs_p > 4) {
+            frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
+            frame.setCursor(0, 10);
+            frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
+            frame.display();
+        }
+        vTaskDelay(1);
+    }
+    memset(buffer, 0, 6890 * sizeof(int16_t));
+    fclose(wave_file);
+    i2s_zero_dma_buffer(I2S_NUM_0);
+    i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
+    keyOK = false;
+    MenuPos = 0;
+    view_mode = false;
+}
+
 void Setting() {
+
+    const uint8_t SETTING_NUM = 4;
+
+    const char *menuStr[SETTING_NUM] = {"Linear interpolation", "World", "Fuck", "world"};
+    uint8_t optPos = 0;
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
+    frame.setCursor(0, 11);
+    frame.setTextSize(2);
+    frame.fillRect(0, 10, 160, 16, 0x39c7);
+    frame.printf("SETTINGS\n");
+    frame.setTextSize(0);
+    frame.drawFastHLine(0, 26, 160, 0xa6bf);
     for (;;) {
+        frame.fillRect(0, 27, 160, 107, ST7735_BLACK);
+        frame.setCursor(0, 29);
+        frame.fillRect(0, (optPos*10)+27, 160, 11, 0x528a);
+        for (uint8_t i = 0; i < SETTING_NUM; i++) {
+            frame.printf("%s\n", menuStr[i]);
+            frame.setCursor(0, frame.getCursorY()+2);
+        }
         frame.display();
         vTaskDelay(2);
         if (keyOK) {
             keyOK = false;
-            MenuPos = 0;
-            break;
+            
         }
         if (keyL) {
-            playStat = false;
-            FILE *wave_file;
-            size_t bytes_read;
-            view_mode = true;
-            const char *wave_file_name = fileSelect("/sdcard");
-            wave_file = fopen(wave_file_name, "rb");
-            WavHeader_t header;
-            parseWavHeader(wave_file, &header);
-            printf("WAV File Information:\n");
-            printf("Sample Rate: %u Hz\n", header.sampleRate);
-            printf("Channels: %u\n", header.numChannels);
-            printf("Bits Per Sample: %u\n", header.bitsPerSample);
-            size_t writeing;
-            i2s_zero_dma_buffer(I2S_NUM_0);
-            i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
-            frame.fillScreen(ST7735_BLACK);
-            frame.setTextColor(ST7735_WHITE);
-            frame.setCursor(0, 0);
-            frame.printf("PLATING...\n\n\n\n\n");
-            frame.setTextColor(0x52aa);
-            frame.printf("WAV File Information:\nSample Rate: %u Hz\nBits Per Sample: %u\nChannels: %u", header.sampleRate, header.bitsPerSample, header.numChannels);
-            frame.setTextColor(ST7735_WHITE);
-            frame.display();
-            float i2s_vol = 1.0f;
-            uint16_t read_p;
-            uint8_t refs_p = 0;
-            while (!feof(wave_file)) {
-                read_p = fread(buffer, 2, 6890, wave_file)<<1;
-                for (uint16_t s = 0; s < read_p; s++) {
-                    buffer[s] *= i2s_vol;
-                }
-                i2s_write(I2S_NUM_0, buffer, read_p, &writeing, portMAX_DELAY);
-                // printf("%d\n", writeing);
-                if (keyL) {
-                    keyL = false;
-                    fseek(wave_file, -6890*16, SEEK_CUR);
-                }
-                if (keyR) {
-                    keyR = false;
-                    fseek(wave_file, 6890*16, SEEK_CUR);
-                }
-                if (keyUP) {
-                    keyUP = false;
-                    i2s_vol += 0.05;
-                    printf("%.2f\n", i2s_vol);
-                }
-                if (keyDOWN) {
-                    keyDOWN = false;
-                    i2s_vol -= 0.05;
-                    printf("%.2f\n", i2s_vol);
-                }
-                if (keyOK) {
-                    keyOK = false;
-                    break;
-                }
-                refs_p++;
-                if (refs_p > 4) {
-                    frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
-                    frame.setCursor(0, 10);
-                    frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
-                    frame.display();
-                }
-                vTaskDelay(1);
-            }
-            memset(buffer, 0, 6890 * sizeof(int16_t));
-            fclose(wave_file);
-            i2s_zero_dma_buffer(I2S_NUM_0);
-            i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
-            keyOK = false;
-            MenuPos = 0;
-            view_mode = false;
-            break;
+            // wav_player();
+            keyL = false;
+            enbLine = false;
         }
         if (keyR) {
             keyR = false;
             enbLine = true;
+        }
+        if (keyUP) {
+            // wav_player();
+            keyUP = false;
+            enbLine = false;
+            optPos--;
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            optPos++;
         }
     }
 }
@@ -1480,7 +1517,13 @@ void comp(void *arg) {
     uint8_t TremoloDepth[4] = {0};
     int VibratoItem[4] = {0};
     uint16_t Mtick = 0;
-    uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
+    uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4f));
+    buffer = calloc(BUFF_SIZE, sizeof(audio16BitStro));
+    // buffer = realloc(buffer, TICK_NUL * sizeof(audio16BitStro));
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+        buffer_ch[ch] = (float *)calloc(BUFF_SIZE, sizeof(float));
+    }
+    buffer16BitStro = (audio16BitStro*)buffer;
     uint8_t volTemp[4];
     uint16_t OfstCfg[4];
     uint8_t rowLoopStart = 0;
@@ -1488,7 +1531,6 @@ void comp(void *arg) {
     bool enbRowLoop = false;
     printf("READ!\n");
     vTaskDelay(128);
-    dispRedy = true;
     uint8_t chl;
     bool enbRetrigger[4] = {false};
     // uint8_t RetriggerPos[4] = {1};
@@ -1498,38 +1540,44 @@ void comp(void *arg) {
     int8_t atkTick[4] = {0};
     int8_t cutTick[4] = {0};
     int8_t skipToRow = 0;
+    uint16_t buffPtr = 0;
+    dispRedy = true;
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
             SPD = 6;
             tick_time = 0;
-            TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
+            TICK_NUL = roundf(SMP_RATE / (125 * 0.4f));
             Mtick = 0;
+            // buffer = realloc(buffer, TICK_NUL * sizeof(audio16BitStro));
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (wave_info[smp_num[chl]][4] > 2) {
-                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
                     } else {
-                        buffer_ch[chl][Mtick>>1] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
                     }
                 }
-                audio_tempL = (int16_t)
-                        roundf(buffer_ch[chlMap[0]][Mtick>>1]
-                                + buffer_ch[chlMap[1]][Mtick>>1]);
-                audio_tempR = (int16_t)
-                        roundf(buffer_ch[chlMap[2]][Mtick>>1]
-                                + buffer_ch[chlMap[3]][Mtick>>1]);
-                buffer[Mtick>>1] = audio_tempL;
-                buffer[(Mtick>>1)+1] = audio_tempR;
-                Mtick+=4;
-                if (Mtick == (TICK_NUL<<2)) {
-                    // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
+                buffer16BitStro[buffPtr].dataL = (int16_t)
+                        roundf(buffer_ch[chlMap[0]][buffPtr]
+                                + buffer_ch[chlMap[1]][buffPtr]);
+                buffer16BitStro[buffPtr].dataR = (int16_t)
+                        roundf(buffer_ch[chlMap[2]][buffPtr]
+                                + buffer_ch[chlMap[3]][buffPtr]);
+                Mtick++;
+                buffPtr++;
+                if (buffPtr >= BUFF_SIZE) {
+                    buffPtr = 0;
                     if (recMod) {
-                        wav_audio_write(buffer, Mtick, &wrin, export_wav_file);
+                        wav_audio_write(buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, export_wav_file);
                         printf("WRIN %d\n", wrin);
                     } else {
-                        i2s_write(I2S_NUM_0, &buffer, Mtick, &wrin, portMAX_DELAY);
+                        i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                        // printf("WRIN %d\n", wrin);
                     }
+                }
+                if (Mtick == TICK_NUL) {
+                    // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
                     Mtick = 0;
                     tick_time++;
                     arp_p++;
@@ -1751,8 +1799,8 @@ void comp(void *arg) {
                                     SPD = part_buffer[part_buffer_point][tracker_point][chl][3];
                                     // printf("SPD SET TO %d\n", tick_speed);
                                 } else {
-                                    TICK_NUL = roundf(SMP_RATE / (part_buffer[part_buffer_point][tracker_point][chl][3] * 0.4));
                                     BPM = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    TICK_NUL = roundf(SMP_RATE / (BPM * 0.4f));
                                     // printf("MTICK SET TO %d\n", TICK_NUL);
                                 }
                             }
@@ -1851,8 +1899,8 @@ void comp(void *arg) {
                     i2s_zero_dma_buffer(I2S_NUM_0);
                     vTaskDelay(1);
                     tick_speed = 6;
-                    TICK_NUL = roundf(SMP_RATE / (125 * 0.4));
                     BPM = 125;
+                    TICK_NUL = roundf(SMP_RATE / (BPM * 0.4f));
                     data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
                     Mtick = 0;
                     if (recMod) {
@@ -1866,14 +1914,18 @@ void comp(void *arg) {
         } else {
             loadOk = false;
             if (!view_mode) {
-                for (uint16_t i = 0; i < 4096; i+=4) {
+                for (uint16_t i = 0; i < BUFF_SIZE; i++) {
                     if (wave_info[smp_num[0]][4] > 2) {
-                        buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
                     } else {
-                        buffer_ch[0][i>>1] = buffer_ch[1][i>>1] = buffer_ch[2][i>>1] = buffer_ch[3][i>>1] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
                     }
-                    buffer[i>>1] = (int16_t)roundf(buffer_ch[0][i>>1]);
-                    buffer[(i>>1)+1] = (int16_t)roundf(buffer_ch[0][i>>1]);
+                    buffer16BitStro[i].dataL = (int16_t)
+                            (buffer_ch[chlMap[0]][i]
+                                    + buffer_ch[chlMap[1]][i]);
+                    buffer16BitStro[i].dataR = (int16_t)
+                            (buffer_ch[chlMap[2]][i]
+                                    + buffer_ch[chlMap[3]][i]);
                 }
             }
             if (TestNote) {
@@ -1942,7 +1994,7 @@ void comp(void *arg) {
             // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
             if (!view_mode) {
                 frq[0] = patch_table[wave_info[smp_num[0]][1]] / period[0];
-                i2s_write(I2S_NUM_0, &buffer, 4096, &wrin, portMAX_DELAY);
+                i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
                 vTaskDelay(4);
             } else {
                 vTaskDelay(32);
@@ -2228,7 +2280,7 @@ void setup()
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 2,
-        .allocation_unit_size = 16 * 1024
+        .allocation_unit_size = 8 * 1024
     };
     sdmmc_card_t *card;
     const char mount_point[] = "/sdcard";

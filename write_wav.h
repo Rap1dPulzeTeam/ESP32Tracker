@@ -1,8 +1,4 @@
-#ifndef WAV_WRITER_H
-#define WAV_WRITER_H
-
-#include <stdint.h>
-#include <stdio.h>
+#include <string.h>
 
 // WAV文件头结构体
 typedef struct {
@@ -21,7 +17,6 @@ typedef struct {
     uint32_t subchunk2Size;  // 子块2大小
 } WavHeader_t;
 
-// 初始化WAV文件
 FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, uint16_t numChannels) {
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
@@ -29,45 +24,43 @@ FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, u
         return NULL;
     }
 
-    // 填充WAV文件头
     WavHeader_t header;
     strncpy(header.chunkID, "RIFF", 4);
+    header.chunkSize = 0;  // Later updated
     strncpy(header.format, "WAVE", 4);
     strncpy(header.subchunk1ID, "fmt ", 4);
-    header.subchunk1Size = 16;  // PCM格式
-    header.audioFormat = 1;     // PCM格式
-    header.numChannels = numChannels;     // 单声道
+    header.subchunk1Size = 16;
+    header.audioFormat = 1;
+    header.numChannels = numChannels;
     header.sampleRate = sample_rate;
     header.bitsPerSample = bits_per;
-    header.byteRate = sample_rate * bits_per / 8;
-    header.blockAlign = bits_per / 8;
+    header.byteRate = sample_rate * numChannels * bits_per / 8;
+    header.blockAlign = numChannels * bits_per / 8;
     strncpy(header.subchunk2ID, "data", 4);
-    header.subchunk2Size = 0;   // 之后会更新为实际数据大小
+    header.subchunk2Size = 0;
 
-    // 写入WAV文件头
     fwrite(&header, sizeof(header), 1, file);
 
     return file;
 }
 
-// 将缓冲区写入WAV文件
 void wav_audio_write(void *inbuf, size_t len, size_t *bytes_written, FILE *file) {
-    // 写入数据
     *bytes_written = fwrite(inbuf, sizeof(char), len, file);
-
-    // 更新subchunk2Size字段
-    fseek(file, 40, SEEK_SET);  // subchunk2Size偏移量为40
-    uint32_t subchunk2Size = ftell(file) - 44;  // 实际数据大小
-    fwrite(&subchunk2Size, sizeof(uint32_t), 1, file);
-
-    // 回到文件末尾
+    fseek(file, 4, SEEK_SET);  // Seek to chunkSize position
+    uint32_t currentPos = ftell(file);
     fseek(file, 0, SEEK_END);
-    // fflush(file);
+    uint32_t fileSize = ftell(file);
+    uint32_t chunkSize = fileSize - 8;
+    fseek(file, 4, SEEK_SET);
+    fwrite(&chunkSize, sizeof(chunkSize), 1, file);
+
+    uint32_t dataChunkPos = 40;  // Position of subchunk2Size
+    uint32_t subchunk2Size = fileSize - 44;
+    fseek(file, dataChunkPos, SEEK_SET);
+    fwrite(&subchunk2Size, sizeof(subchunk2Size), 1, file);
+    fseek(file, 0, SEEK_END);
 }
 
-// 关闭WAV文件
 void wav_audio_close(FILE *file) {
     fclose(file);
 }
-
-#endif /* WAV_WRITER_H */

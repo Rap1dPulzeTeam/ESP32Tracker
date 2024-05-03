@@ -130,6 +130,10 @@ char samp_name[33][22];
 bool dispRedy = false;
 bool playStat = false;
 
+bool enbFltr[4] = {false, false, false, false};
+
+float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
+
 const float patch_table[16] = {3546836.0, 3572537.835745873, 3598425.9175884672, 3624501.595143772, 3650766.227807657, 3677221.184826728, 3703867.8453697185, 3730707.5985993897,
                          3347767.391694687, 3372026.6942439806, 3396461.7896998064, 3421073.9519300302, 3445864.464033491, 3470834.61840689, 3495985.7168121682, 3521319.0704443706};
 
@@ -176,6 +180,20 @@ void limit(float a) {
         lmtP = 0;
     }
 }
+
+// 适用于每次输入单个样本点的一阶低通滤波器
+static float lastOutputs[NUM_CHANNELS] = {0};
+
+float lowPassFilterSingleSample(float sample, int chl, float cutoffFreqIn, uint16_t sampleRate) {
+    if (chl < 0 || chl >= NUM_CHANNELS) {
+        printf("Channel index out of range.\n");
+        return sample;
+    }
+    if ((uint16_t)cutoffFreqIn == sampleRate || cutoffFreqIn <= 0) return sample;
+    float alpha = cutoffFreqIn / (cutoffFreqIn + sampleRate);
+    return lastOutputs[chl] = alpha * sample + (1 - alpha) * lastOutputs[chl];
+}
+
 // 读取文件并存储到动态分配的内存中
 uint8_t* read_file(const char* path, long* file_size) {
     FILE* file = fopen(path, "rb"); // 以二进制只读模式打开文件
@@ -467,10 +485,12 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     if (isline && (int)data_index[chl] < smp_size - 1) {
         sample2 = (float)((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] << 6) * vol_table[vole];
         float frac = data_index[chl] - (int)data_index[chl];
-        return (1.0f - frac) * sample1 + frac * sample2;
+        if (enbFltr[chl]) return lowPassFilterSingleSample((1.0f - frac) * sample1 + frac * sample2, chl, cutOffFreq[chl], SMP_RATE);
+        else return (1.0f - frac) * sample1 + frac * sample2;
     }
 
-    return sample1;
+    if (enbFltr[chl]) return lowPassFilterSingleSample(sample1, chl, cutOffFreq[chl], SMP_RATE);
+    else return sample1;
 }
 // AUDIO DATA COMP END ------------------------------------------
 
@@ -753,16 +773,10 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
     drawMidRect(Xlen, Ylen, ST7735_WHITE);
     frame.setTextColor(0x7bcf);
     setMidCusr(Xlen, Ylen, 3);
-    //frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
-    //frame.setFont(&u8_bit_hud5pt7b);
     frame.printf("%s", title);
-    //frame.setFont();
     frame.setTextColor(ST7735_WHITE);
     setMidCusr(Xlen, Ylen, 2);
-    //frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
-    //frame.setFont(&u8_bit_hud5pt7b);
     frame.printf("%s\n", title);
-    //frame.setFont();
     setMidCusr(Xlen, Ylen, 2);
     uint8_t CXTmp = frame.getCursorX()+4;
     frame.setCursor(CXTmp, frame.getCursorY()+14);
@@ -772,6 +786,58 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
         frame.setCursor(CXTmp, frame.getCursorY()+3);
     }
     frame.setCursor(OriginX, OriginY);
+}
+
+int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt_init_val, uint8_t Xlen, ...) {
+    va_list args;
+    va_start(args, total_options);
+    uint8_t OriginX = frame.getCursorX();
+    uint8_t OriginY = frame.getCursorY();
+    uint8_t Ylen = ((total_options+1)*11)+18;
+    int8_t current_option = opt_init_val;
+    char * menuStr[total_options];
+    for (uint8_t i = 0; i < total_options; i++) {
+        menuStr[i] = (char *)va_arg(args, const char *);
+    }
+    for (;;) {
+        fillMidRect(Xlen, Ylen, 0x4208);
+        drawMidRect(Xlen, Ylen, ST7735_WHITE);
+        frame.setTextColor(0x7bcf);
+        setMidCusr(Xlen, Ylen, 3);
+        frame.printf("%s", title);
+        frame.setTextColor(ST7735_WHITE);
+        setMidCusr(Xlen, Ylen, 2);
+        frame.printf("%s\n", title);
+        setMidCusr(Xlen, Ylen, 2);
+        uint8_t CXTmp = frame.getCursorX()+4;
+        frame.setCursor(CXTmp, frame.getCursorY()+14);
+        frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
+        for (uint8_t q = 0; q < total_options; q++) {
+            frame.printf("%s\n", menuStr[q]);
+            frame.setCursor(CXTmp, frame.getCursorY()+3);
+        }
+        frame.printf("Close");
+        if (keyUP) {
+            keyUP = false;
+            current_option--;
+            if (current_option < 1) current_option = total_options+1;
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            current_option++;
+            if (current_option > total_options+1) current_option = 1;
+        }
+        if (keyOK) {
+            keyOK = false;
+            frame.setCursor(OriginX, OriginY);
+            if (current_option == total_options+1) break;
+            else return current_option - 1;
+        }
+        frame.display();
+        vTaskDelay(2);
+    }
+    frame.setCursor(OriginX, OriginY);
+    return -1;
 }
 
 void MainPage() {
@@ -1400,15 +1466,73 @@ void wav_player() {
     view_mode = false;
 }
 
+void filterSetting() {
+    MainReDraw();
+    int8_t fltrPos = 0;
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
+    frame.setCursor(1, 11);
+    frame.setTextSize(2);
+    frame.fillRect(0, 10, 160, 16, 0x39c7);
+    frame.printf("FILTERS\n");
+    frame.setTextSize(0);
+    frame.drawFastHLine(0, 26, 160, 0xa6bf);
+    for (;;) {
+        frame.fillRect(0, 27, 160, 107, ST7735_BLACK);
+        frame.setCursor(0, 31);
+        frame.setTextSize(2);
+        if (fltrPos) frame.fillRect(0, (fltrPos*26)+26, 160, 25, 0x528a);
+        else frame.fillRect(0, (fltrPos*26)+27, 160, 24, 0x528a);
+        frame.drawFastVLine(48, 27, 101, ST7735_WHITE);
+        for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+            frame.printf("CHL%d\n", i+1);
+            frame.setCursor(0, frame.getCursorY()+10);
+            frame.drawFastHLine(0, frame.getCursorY()-6, 160, ST7735_WHITE);
+        }
+        frame.setTextSize(0);
+        frame.setCursor(52, 31);
+        for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+            frame.printf("STATUS: %s\n", enbFltr[i] ? "ON" : "OFF");
+            frame.setCursor(52, frame.getCursorY());
+            frame.printf("CUTOFF: %.1fHz\n", cutOffFreq[i]);
+            frame.setCursor(52, frame.getCursorY()+10);
+        }
+        frame.display();
+        vTaskDelay(4);
+        if (keyL) {
+            keyL = false;
+            fltrPos--;
+            if (fltrPos < 0) {MenuPos = 3; break;};
+        }
+        if (keyR) {
+            keyR = false;
+            fltrPos++;
+            if (fltrPos > 3) fltrPos = 0;
+        }
+        if (keyUP) {
+            keyUP = false;
+            cutOffFreq[fltrPos]+=500;
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            cutOffFreq[fltrPos]-=500;
+        }
+        if (keyOK) {
+            keyOK = false;
+            enbFltr[fltrPos] = !enbFltr[fltrPos];
+        }
+    }
+}
+
 void Setting() {
 
-    const uint8_t SETTING_NUM = 4;
+    const uint8_t SETTING_NUM = 3;
 
-    const char *menuStr[SETTING_NUM] = {"Linear interpolation", "World", "Fuck", "world"};
+    const char *menuStr[SETTING_NUM] = {"Linear interp", "Filter Setting", "Close"};
     uint8_t optPos = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
-    frame.setCursor(0, 11);
+    frame.setCursor(1, 11);
     frame.setTextSize(2);
     frame.fillRect(0, 10, 160, 16, 0x39c7);
     frame.printf("SETTINGS\n");
@@ -1426,7 +1550,13 @@ void Setting() {
         vTaskDelay(2);
         if (keyOK) {
             keyOK = false;
-            
+            if (optPos == 0) {
+                int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 2, enbLine+1, 90, "OFF", "ON");
+                if (menuRtrn != -1) enbLine = menuRtrn;
+                printf("MENU RETURN %d\n", menuRtrn);
+            }
+            if (optPos == 1) {MenuPos = 4; break;}
+            if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
         }
         if (keyL) {
             // wav_player();
@@ -1440,7 +1570,6 @@ void Setting() {
         if (keyUP) {
             // wav_player();
             keyUP = false;
-            enbLine = false;
             optPos--;
         }
         if (keyDOWN) {
@@ -1482,6 +1611,11 @@ void display_lcd(void *arg) {
         } else if (MenuPos == 3) {
             MainReDraw();
             Setting();
+            vTaskDelay(4);
+        }
+        else if (MenuPos == 4) {
+            MainReDraw();
+            filterSetting();
             vTaskDelay(4);
         }
         vTaskDelay(4);
@@ -1559,6 +1693,7 @@ void comp(void *arg) {
                     }
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
+                        // roundf(buffer_ch[chlMap[0]][buffPtr]
                         roundf(buffer_ch[chlMap[0]][buffPtr]
                                 + buffer_ch[chlMap[1]][buffPtr]);
                 buffer16BitStro[buffPtr].dataR = (int16_t)

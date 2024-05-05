@@ -129,6 +129,11 @@ char samp_name[33][22];
 #define BASE_FREQ 8267
 bool dispRedy = false;
 bool playStat = false;
+uint32_t wave_MAX_L = 0;
+uint32_t wave_MAX_R = 0;
+uint32_t wave_MAX_L_OUT = 0;
+uint32_t wave_MAX_R_OUT = 0;
+bool MAX_COMP_FINISH = false;
 
 bool enbFltr[4] = {false, false, false, false};
 
@@ -179,6 +184,36 @@ void limit(float a) {
         lmt = 0;
         lmtP = 0;
     }
+}
+
+#define DELAY_BUFFER_SIZE 8192
+
+float delayBuffer[4][DELAY_BUFFER_SIZE];
+int delayWriteIndex[4] = {0, 0, 0, 0};
+
+void initDelayBuffer() {
+    for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
+        delayBuffer[0][i] = 0.0f;
+        delayBuffer[1][i] = 0.0f;
+        delayBuffer[2][i] = 0.0f;
+        delayBuffer[3][i] = 0.0f;
+    }
+}
+
+float audioDelay(float inputSample, int delayLength, float decayRate, float dryMix, float wetMix, uint8_t chl) {
+    if (delayLength >= DELAY_BUFFER_SIZE) {
+        delayLength = DELAY_BUFFER_SIZE - 1;
+    }
+
+    int readIndex = delayWriteIndex[chl] - delayLength;
+    if (readIndex < 0) {
+        readIndex += DELAY_BUFFER_SIZE;
+    }
+
+    float outputSample = delayBuffer[chl][readIndex];
+    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
+    delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
+    return dryMix * inputSample + wetMix * outputSample;
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
@@ -313,14 +348,18 @@ void display(void *arg) {
         uint8_t volTemp;
         uint8_t addr[4];
         if (view_mode) {
-            for (uint8_t ct = 0; ct < 16; ct++) {
+            if (MAX_COMP_FINISH) {
+                MAX_COMP_FINISH = false;
                 ssd1306_clear_buffer(&dev);
-                ssd1306_display_text(&dev, 0, (char *)"VIEW MODE", 10, false);
-                for (uint16_t x = 0; x < 128; x++) {
-                    // _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
-                    // _ssd1306_pixel(&dev, x, (buffer[(x+(ct*128))*4]/1024)+32, false);
+                ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
+                for (uint8_t i = 0; i < 16; i++) {
+                    _ssd1306_line(&dev, 0, i+16, wave_MAX_L_OUT>>8, i+16, false);
+                }
+                for (uint8_t i = 0; i < 16; i++) {
+                    _ssd1306_line(&dev, 0, i+34, wave_MAX_R_OUT>>8, i+34, false);
                 }
                 ssd1306_show_buffer(&dev);
+            } else {
                 vTaskDelay(1);
             }
         } else {
@@ -665,6 +704,7 @@ const char* fileSelect(const char* root_path) {
                 files = NULL;
                 count = list_directory(path, &files);
                 printf("%s\n", path);
+                SelPos = 0;
             } else {
                 break;
             }
@@ -1396,7 +1436,10 @@ void wav_player() {
     FILE *wave_file;
     size_t bytes_read;
     view_mode = true;
-    memset(buffer, 0, 6890 * sizeof(int16_t));
+    vTaskDelay(64);
+    buffer = realloc(buffer, 10240);
+    buffer16BitStro = (audio16BitStro*)buffer;
+    memset(buffer, 0, BUFF_SIZE * sizeof(int16_t));
     const char *wave_file_name = fileSelect("/sdcard");
     wave_file = fopen(wave_file_name, "rb");
     WavHeader_t header;
@@ -1420,50 +1463,67 @@ void wav_player() {
     uint16_t read_p;
     uint8_t refs_p = 0;
     while (!feof(wave_file)) {
-        read_p = fread(buffer, 2, 6890, wave_file)<<1;
-        for (uint16_t s = 0; s < read_p; s++) {
-            // buffer[s] *= i2s_vol;
-        }
-        i2s_write(I2S_NUM_0, buffer, read_p, &writeing, portMAX_DELAY);
-        // printf("%d\n", writeing);
-        if (keyL) {
-            keyL = false;
-            fseek(wave_file, -6890*16, SEEK_CUR);
-        }
-        if (keyR) {
-            keyR = false;
-            fseek(wave_file, 6890*16, SEEK_CUR);
-        }
-        if (keyUP) {
-            keyUP = false;
-            i2s_vol += 0.05;
-            printf("%.2f\n", i2s_vol);
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            i2s_vol -= 0.05;
-            printf("%.2f\n", i2s_vol);
-        }
-        if (keyOK) {
-            keyOK = false;
-            break;
-        }
-        refs_p++;
-        if (refs_p > 4) {
+        read_p = fread(buffer16BitStro, 1, 10240, wave_file);
+        if (refs_p > 1) {
+            refs_p = 0;
             frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
             frame.setCursor(0, 10);
             frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
             frame.display();
         }
+        for (uint16_t s = 0; s < 2560; s++) {
+            wave_MAX_L += abs(buffer16BitStro[s].dataL);
+            wave_MAX_R += abs(buffer16BitStro[s].dataR);
+            buffer16BitStro[s].dataL *= i2s_vol;
+            buffer16BitStro[s].dataR *= i2s_vol;
+        }
+        wave_MAX_L_OUT = wave_MAX_L / 2560;
+        wave_MAX_L = 0;
+        wave_MAX_R_OUT = wave_MAX_R / 2560;
+        wave_MAX_R = 0;
+        MAX_COMP_FINISH = true;
+        i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
+        printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
+        if (keyL) {
+            keyL = false;
+            fseek(wave_file, -10240*16, SEEK_CUR);
+        }
+        if (keyR) {
+            keyR = false;
+            fseek(wave_file, 10240*16, SEEK_CUR);
+        }
+        if (keyUP) {
+            keyUP = false;
+            i2s_vol += 0.05f;
+            printf("%.2f\n", i2s_vol);
+        }
+        if (keyDOWN) {
+            keyDOWN = false;
+            i2s_vol -= 0.05f;
+            printf("%.2f\n", i2s_vol);
+            
+        }
+        if (keyOK) {
+            keyOK = false;
+            i2s_vol = 1.0f;
+            break;
+        }
+        refs_p++;
         vTaskDelay(1);
     }
-    memset(buffer, 0, 6890 * sizeof(int16_t));
+    vTaskDelay(64);
+    buffer = realloc(buffer, BUFF_SIZE * sizeof(audio16BitStro));
+    buffer16BitStro = (audio16BitStro*)buffer;
+    vTaskDelay(64);
+    memset(buffer, 0, BUFF_SIZE * sizeof(audio16BitStro));
     fclose(wave_file);
+    vTaskDelay(16);
     i2s_zero_dma_buffer(I2S_NUM_0);
     i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     keyOK = false;
     MenuPos = 0;
     view_mode = false;
+    vTaskDelay(64);
 }
 
 void filterSetting() {
@@ -1526,9 +1586,9 @@ void filterSetting() {
 
 void Setting() {
 
-    const uint8_t SETTING_NUM = 3;
+    const uint8_t SETTING_NUM = 4;
 
-    const char *menuStr[SETTING_NUM] = {"Linear interp", "Filter Setting", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Linear interp", "Filter Setting", "WAV Player", "Close"};
     uint8_t optPos = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -1556,10 +1616,10 @@ void Setting() {
                 printf("MENU RETURN %d\n", menuRtrn);
             }
             if (optPos == 1) {MenuPos = 4; break;}
+            if (optPos == 2) wav_player();
             if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
         }
         if (keyL) {
-            // wav_player();
             keyL = false;
             enbLine = false;
         }
@@ -1568,7 +1628,6 @@ void Setting() {
             enbLine = true;
         }
         if (keyUP) {
-            // wav_player();
             keyUP = false;
             optPos--;
         }
@@ -1694,11 +1753,11 @@ void comp(void *arg) {
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
                         // roundf(buffer_ch[chlMap[0]][buffPtr]
-                        roundf(buffer_ch[chlMap[0]][buffPtr]
-                                + buffer_ch[chlMap[1]][buffPtr]);
+                        roundf(audioDelay(buffer_ch[chlMap[0]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 0)
+                                + audioDelay(buffer_ch[chlMap[1]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 1));
                 buffer16BitStro[buffPtr].dataR = (int16_t)
-                        roundf(buffer_ch[chlMap[2]][buffPtr]
-                                + buffer_ch[chlMap[3]][buffPtr]);
+                        roundf(audioDelay(buffer_ch[chlMap[2]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 2)
+                                + audioDelay(buffer_ch[chlMap[3]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 3));
                 Mtick++;
                 buffPtr++;
                 if (buffPtr >= BUFF_SIZE) {
@@ -2403,8 +2462,8 @@ void input(void *arg) {
 
 void setup()
 {
+    initDelayBuffer();
     esp_err_t ret;
-
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",

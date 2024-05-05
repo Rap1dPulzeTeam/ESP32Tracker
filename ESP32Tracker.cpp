@@ -30,7 +30,6 @@
 #include "write_wav.h"
 #include "esp_dsp.h"
 #include "ESPRotary.h"
-#include "8_bit_hud5pt7b.h"
 #include "audioTypedef.h"
 
 #define MOUNT_POINT "/sdcard"

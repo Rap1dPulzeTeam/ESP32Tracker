@@ -120,8 +120,8 @@ uint8_t stp;
 bool display_stat = true;
 
 uint8_t part_table[128];
-int8_t part_point = 2;
-int8_t tracker_point = 0;
+int8_t part_point = 0;
+int8_t row_point = 0;
 char song_name[20];
 char samp_name[33][22];
 
@@ -323,7 +323,6 @@ uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
 int16_t temp;
 uint16_t wave_info[33][5];
 uint32_t wav_ofst[34];
-int8_t showPart = 0;
 bool mute[4] = {false, false, false, false};
 
 // OSC START -----------------------------------------------------
@@ -365,7 +364,7 @@ void display(void *arg) {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
                 sprintf(ten, " %d", esp_get_free_heap_size());
-                // sprintf(ten, "  %2d %2d>%2d", tracker_point, showPart, part_table[showPart], comper);
+                // sprintf(ten, "  %2d %2d>%2d", row_point, showPart, part_table[showPart], comper);
                 addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
                 addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
                 addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
@@ -446,51 +445,43 @@ void display(void *arg) {
 }
 // OSC END -------------------------------------------------------
 
-inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint16_t part_data[NUM_ROWS][NUM_CHANNELS][4]) {
-//    int pattern_index = tracker_data[952 + part_number];
+inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]) {
     uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
 
-    for (int row_index = 0; row_index < NUM_ROWS; row_index++) {
-        for (int channel_index = 0; channel_index < NUM_CHANNELS; channel_index++) {
-            uint16_t byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
-            // Byte structure for tracker data:
-            // +----------------+--------------+----------------+-------------+
-            // |    byte 1      |    byte 2    |     byte 3     |    byte 4   |
-            // |----------------|--------------|----------------|-------------|
-            // | 0000       0000|00000000      | 0000       0000|00000000     |
-            // |________________|______________|________________|_____________|
-            // | Upper four     | 12 bits for  | Lower four     | Effect      |
-            // | bits of sample | note period. | bits of sample | command.    |
-            // | number.        |              | number.        |             |
-            // +----------------+--------------+----------------+-------------+
+    uint16_t byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
+    // Byte structure for tracker data:
+    // +----------------+--------------+----------------+-------------+
+    // |    byte 1      |    byte 2    |     byte 3     |    byte 4   |
+    // |----------------|--------------|----------------|-------------|
+    // | 0000       0000|00000000      | 0000       0000|00000000     |
+    // |________________|______________|________________|_____________|
+    // | Upper four     | 12 bits for  | Lower four     | Effect      |
+    // | bits of sample | note period. | bits of sample | command.    |
+    // | number.        |              | number.        |             |
+    // +----------------+--------------+----------------+-------------+
 
-            uint8_t byte1 = pattern_data[byte_index];
-            uint8_t byte2 = pattern_data[byte_index + 1];
-            uint8_t byte3 = pattern_data[byte_index + 2];
-            uint8_t byte4 = pattern_data[byte_index + 3];
+    uint8_t byte1 = pattern_data[byte_index];
+    uint8_t byte2 = pattern_data[byte_index + 1];
+    uint8_t byte3 = pattern_data[byte_index + 2];
+    uint8_t byte4 = pattern_data[byte_index + 3];
 
-            // part_data[ROW][CHAN][NOTE_DATA]
-            //                          |
-            //                          |- 0: Amiga period
-            //                          |- 1: Sample number
-            //                          |- 2: Effect1 (Eee)
-            //                          +- 3: Effect2 (eEE)
-            part_data[row_index][channel_index][0] = ((byte1 & 0x0F) << 8) | byte2;
-            part_data[row_index][channel_index][1] = (byte1 & 0xF0) | (byte3 >> 4);
-            part_data[row_index][channel_index][2] = (byte3 & 0x0F);
-            part_data[row_index][channel_index][3] = byte4;
-        }
-    }
+    // part_data[ROW][CHAN][NOTE_DATA]
+    //                          |
+    //                          |- 0: Amiga period
+    //                          |- 1: Sample number
+    //                          |- 2: Effect1 (Eee)
+    //                          +- 3: Effect2 (eEE)
+    part_data[0] = ((byte1 & 0x0F) << 8) | byte2;
+    part_data[1] = (byte1 & 0xF0) | (byte3 >> 4);
+    part_data[2] = (byte3 & 0x0F);
+    part_data[3] = byte4;
 }
 
 void write_part_data(uint8_t *tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint8_t row_data[4]) {
-    // 定位到起始位置
     uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
 
-    // 计算特定行和通道在数据中的字节索引
     uint16_t byte_index = row * NUM_CHANNELS * 4 + chl * 4;
 
-    // 写入数据
     pattern_data[byte_index] = (row_data[1] & 0xF0) | ((row_data[0] >> 8) & 0x0F);
     pattern_data[byte_index + 1] = row_data[0] & 0xFF;
     pattern_data[byte_index + 2] = (row_data[1] << 4) | (row_data[2] & 0x0F);
@@ -534,8 +525,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
 
 // float frq[CHL_NUM] = {0};
 
-uint8_t part_buffer_point = 0;
-uint16_t part_buffer[BUFFER_PATTERNS][NUM_ROWS][NUM_CHANNELS][4];
+uint16_t part_buffer[4];
 bool loadOk = true;
 
 bool skipToNextPart = false;
@@ -887,6 +877,7 @@ void MainPage() {
     frame.fillRect(0, 10, 160, 8, 0x2104);
     uint8_t sideMenu = 0;
     uint8_t fileMenu = 0;
+    uint16_t viewTmp[4];
     for (;;) {
         frame.setCursor(0, 10);
         frame.print(song_name);
@@ -963,8 +954,8 @@ void MainPage() {
         frame.drawFastVLine(136, 28, 25, 0xd69a);
 
         for (int8_t i = -1; i < 2; i++) {
-            if ((showPart+i >= 0) && (showPart+i < NUM_PATTERNS)) {
-                frame.printf("%3d %3d\n", showPart+i, part_table[showPart+i]);
+            if ((part_point+i >= 0) && (part_point+i < NUM_PATTERNS)) {
+                frame.printf("%3d %3d\n", part_point+i, part_table[part_point+i]);
                 // frame.printf("888|888\n");
             } else {
                 frame.printf("\n");
@@ -973,12 +964,16 @@ void MainPage() {
         }
         frame.setCursor(0, 56);
         for (int8_t i = -4; i < 5; i++) {
-            if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
+            if ((row_point+i < 64) && (row_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
-                frame.printf("%2d", tracker_point+i);
+                frame.printf("%2d", row_point+i);
                 for (uint8_t chl = 0; chl < 4; chl++) {
-                    showTmpNote = part_buffer[part_buffer_point][tracker_point+i][chl][0];
-                    showTmpSamp = part_buffer[part_buffer_point][tracker_point+i][chl][1];
+                    //showTmpNote = part_buffer[part_buffer_point][row_point+i][chl][0];
+                    //showTmpSamp = part_buffer[part_buffer_point][row_point+i][chl][1];
+                    read_part_data(tracker_data, part_table[part_point], row_point+i, chl, viewTmp);
+                    showTmpNote = viewTmp[0];
+                    showTmpSamp = viewTmp[1];
+
                     frame.setCursor(frame.getCursorX()+4, frame.getCursorY());
                     if (showTmpNote) {
                         frame.setTextColor(0xa51f);
@@ -1005,7 +1000,7 @@ void MainPage() {
 
         frame.fillRect(0, 19, 112, 21, 0x3186);
         frame.setCursor(1, 20);
-        frame.printf("BPM: %d %d %d", BPM, part_buffer_point, part_point);
+        frame.printf("BPM: %d %d", BPM, part_point);
 
         frame.setCursor(1, 28);
         frame.printf("SPD: %d", SPD);
@@ -1041,14 +1036,12 @@ void MainPage() {
             if (keyDOWN) {
                 keyDOWN = false;
                 if (sideMenu == 4) {
-                    playStat = false;
                     partDOWN = true;
                 }
             }
             if (keyUP) {
                 keyUP = false;
                 if (sideMenu == 4) {
-                    playStat = false;
                     partUP = true;
                 }
             }
@@ -1095,10 +1088,8 @@ void MainPage() {
                         loadOk = false;
                         playStat = false;
                         vTaskDelay(32);
-                        part_buffer_point = 0;
-                        part_point = 2;
-                        showPart = 0;
-                        tracker_point = 0;
+                        part_point = 0;
+                        row_point = 0;
                         data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
                         mute[0] = mute[1] = mute[2] = mute[3] = 0;
                         period[0] = period[1] = period[2] = period[3] = 0;
@@ -1107,12 +1098,6 @@ void MainPage() {
                         read_pattern_table();
                         read_wave_info();
                         comp_wave_ofst();
-                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-                        if (NUM_PATTERNS == 1) {
-                            read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
-                        } else {
-                            read_part_data((uint8_t*)tracker_data, part_table[1], part_buffer[1]);
-                        }
                         fileMenu = 0;
                         windowsClose = true;
                         MainReDraw();
@@ -1123,23 +1108,19 @@ void MainPage() {
                         frame.fillRect(0, 10, 160, 8, 0x2104);
                         uint8_t sideMenu = 0;
                         uint8_t fileMenu = 0;
-                        tracker_point = 0;
+                        row_point = 0;
                         keySpace = false;
                     }
                     if (fileMenu == 1) {
                         loadOk = false;
                         playStat = false;
                         vTaskDelay(32);
-                        part_buffer_point = 0;
-                        part_point = 2;
-                        showPart = 0;
+                        part_point = 0;
                         new_tracker_file();
                         read_pattern_table();
                         read_wave_info();
                         comp_wave_ofst();
-                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-                        read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
-                        tracker_point = 0;
+                        row_point = 0;
                         data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
                         mute[0] = mute[1] = mute[2] = mute[3] = 0;
                         period[0] = period[1] = period[2] = period[3] = 0;
@@ -1153,7 +1134,7 @@ void MainPage() {
                         frame.fillRect(0, 10, 160, 8, 0x2104);
                         uint8_t sideMenu = 0;
                         uint8_t fileMenu = 0;
-                        tracker_point = 0;
+                        row_point = 0;
                         keySpace = false;
                     }
                 } else {
@@ -1243,11 +1224,11 @@ void MainPage() {
             }
             if (keyUP) {
                 keyUP = false;
-                tracker_point--;
+                row_point--;
             }
             if (keyDOWN) {
                 keyDOWN = false;
-                tracker_point++;
+                row_point++;
             }
             if (keyL) {
                 keyL = false;
@@ -1267,7 +1248,7 @@ void MainPage() {
         if (keySpace) {
             keySpace = false;
             if (!playStat) {
-                tracker_point = 0;
+                row_point = 0;
             }
             playStat = !playStat;
         }
@@ -1283,6 +1264,7 @@ void ChlEdit() {
     frame.drawFastVLine(78, 0, 128, 0x6b7e);
     frame.drawFastVLine(79, 0, 128, 0xad7f);
     int8_t EditPos = 0;
+    uint16_t viewTmp[4];
     bool enbRec = false;
     for (;;) {
         frame.fillRect(0, 40, 77, 88, ST7735_BLACK);
@@ -1334,14 +1316,17 @@ void ChlEdit() {
 
         frame.setCursor(81, 0);
         for (int8_t i = -7; i < 9; i++) {
-            if ((tracker_point+i < 64) && (tracker_point+i >= 0)) {
+            if ((row_point+i < 64) && (row_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
-                frame.printf("%2d", tracker_point+i);
-                showTmpNote = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][0];
-                showTmpSamp = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][1];
-                showTmpEFX1 = part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][2];
-                showTmpEFX2_1 = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
-                showTmpEFX2_2 = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point+i][ChlPos-1][3]);
+                frame.printf("%2d", row_point+i);
+                read_part_data(tracker_data, part_table[part_point], row_point+i, ChlPos-1, viewTmp);
+                
+                showTmpNote = viewTmp[0];
+                showTmpSamp = viewTmp[1];
+                showTmpEFX1 = viewTmp[2];
+                showTmpEFX2_1 = hexToDecimalTens(viewTmp[3]);
+                showTmpEFX2_2 = hexToDecimalOnes(viewTmp[3]);
+                
                 frame.setCursor(frame.getCursorX()+5, frame.getCursorY());
                 if (showTmpNote) {
                     frame.setTextColor(0xcdff);
@@ -1385,11 +1370,11 @@ void ChlEdit() {
         }
         if (keyUP) {
             keyUP = false;
-            tracker_point--;
+            row_point--;
         }
         if (keyDOWN) {
             keyDOWN = false;
-            tracker_point++;
+            row_point++;
         }
         if (keyL) {
             keyL = false;
@@ -1647,14 +1632,10 @@ void display_lcd(void *arg) {
     read_pattern_table();
     read_wave_info();
     comp_wave_ofst();
-    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[0]);
-    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[1]);
-    part_buffer_point = 0;
-    part_point = 2;
-    showPart = 0;
+    part_point = 0;
     loadOk = true;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
-    xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 3, &LOAD, 0);
+    // xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 3, &LOAD, 0);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -1825,101 +1806,101 @@ void comp(void *arg) {
                     } else if (tick_time == tick_speed) {
                         tick_time = 0;
                         for (chl = 0; chl < 4; chl++) {
-
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 13) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][3]) {
-                                    skipToRow = hexToRow(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                            read_part_data(tracker_data, part_table[part_point], row_point, chl, part_buffer);
+                            if (part_buffer[2] == 13) {
+                                if (part_buffer[3]) {
+                                    skipToRow = hexToRow(part_buffer[3]);
                                     printf("SKIP TO NEXT PART'S %d ROW\n", skipToRow);
                                 }
                                 skipToNextPart = true;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 11) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][3]) {
-                                    skipToAnyPart = part_buffer[part_buffer_point][tracker_point][chl][3];
+                            if (part_buffer[2] == 11) {
+                                if (part_buffer[3]) {
+                                    skipToAnyPart = part_buffer[3];
                                 }
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][1]) {
-                                smp_num[chl] = part_buffer[part_buffer_point][tracker_point][chl][1];
+                            if (part_buffer[1]) {
+                                smp_num[chl] = part_buffer[1];
                                 vol[chl] = wave_info[smp_num[chl]][2];
                                 lastVol[chl] = vol[chl];
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 3
-                                    || part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
+                            if (part_buffer[0]) {
+                                if (part_buffer[2] == 3
+                                    || part_buffer[2] == 5) {
                                     enbPortTone[chl] = true;
-                                    if (part_buffer[part_buffer_point][tracker_point][chl][0]) {
-                                        portToneTarget[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                    if (part_buffer[0]) {
+                                        portToneTarget[chl] = part_buffer[0];
                                         portToneSource[chl] = lastNote[chl];
-                                        lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                        lastNote[chl] = part_buffer[0];
                                     }
                                     if (enbSlideDown[chl] || enbSlideUp[chl]) {
                                         portToneSource[chl] = period[chl];
                                     }
                                     // printf("PT TARGET SET TO %d. SOURCE IS %d\n", portToneTarget[chl], portToneSource[chl]);
-                                    if ((part_buffer[part_buffer_point][tracker_point][chl][3])
-                                            && (part_buffer[part_buffer_point][tracker_point][chl][2] != 5)) {
-                                        portToneSpeed[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    if ((part_buffer[3])
+                                            && (part_buffer[2] != 5)) {
+                                        portToneSpeed[chl] = part_buffer[3];
                                     }
                                 } else {
                                     data_index[chl] = 0;
-                                    lastNote[chl] = part_buffer[part_buffer_point][tracker_point][chl][0];
+                                    lastNote[chl] = part_buffer[0];
                                     period[chl] = lastNote[chl];
                                     vol[chl] = lastVol[chl];
                                     enbPortTone[chl] = false;
                                 }
-                                if (!(part_buffer[part_buffer_point][tracker_point][chl][2] == 12) 
-                                    && part_buffer[part_buffer_point][tracker_point][chl][1]) {
+                                if (!(part_buffer[2] == 12) 
+                                    && part_buffer[1]) {
                                     vol[chl] = wave_info[smp_num[chl]][2];
                                     lastVol[chl] = vol[chl];
                                 }
-                                if (part_buffer[part_buffer_point][tracker_point][chl][1]) {
-                                    smp_num[chl] = part_buffer[part_buffer_point][tracker_point][chl][1];
+                                if (part_buffer[1]) {
+                                    smp_num[chl] = part_buffer[1];
                                 }
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10
-                                    || part_buffer[part_buffer_point][tracker_point][chl][2] == 6
-                                        || part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 10) {
+                            if (part_buffer[2] == 10
+                                    || part_buffer[2] == 6
+                                        || part_buffer[2] == 5) {
+                                if (part_buffer[2] == 10) {
                                     enbPortTone[chl] = false;
                                 }
-                                if (part_buffer[part_buffer_point][tracker_point][chl][2] == 5) {
+                                if (part_buffer[2] == 5) {
                                     enbPortTone[chl] = true;
                                 }
-                                hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &volUp[chl], &volDown[chl]);
+                                hexToDecimal(part_buffer[3], &volUp[chl], &volDown[chl]);
                                 // printf("VOL+=%d -=%d\n", volUp[chl], volDown[chl]);
                             } else {
                                 volUp[chl] = volDown[chl] = 0;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 1) {
-                                SlideUp[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                // printf("SET SLIDEUP IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
+                            if (part_buffer[2] == 1) {
+                                SlideUp[chl] = part_buffer[3];
+                                // printf("SET SLIDEUP IS %d\n", part_buffer[3]);
                                 enbSlideUp[chl] = true;
                             } else {
                                 enbSlideUp[chl] = false;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 2) {
-                                SlideDown[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                // printf("SET SLIDEDOWN IS %d\n", part_buffer[part_buffer_point][tracker_point][chl][3]);
+                            if (part_buffer[2] == 2) {
+                                SlideDown[chl] = part_buffer[3];
+                                // printf("SET SLIDEDOWN IS %d\n", part_buffer[3]);
                                 enbSlideDown[chl] = true;
                             } else {
                                 enbSlideDown[chl] = false;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 4
-                                    || part_buffer[part_buffer_point][tracker_point][chl][2] == 6) {
+                            if (part_buffer[2] == 4
+                                    || part_buffer[2] == 6) {
                                 enbVibrato[chl] = true;
-                                if ((part_buffer[part_buffer_point][tracker_point][chl][2] == 4)) {
-                                    if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                        VibratoSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                if ((part_buffer[2] == 4)) {
+                                    if (hexToDecimalTens(part_buffer[3])) {
+                                        VibratoSpeed[chl] = hexToDecimalTens(part_buffer[3]);
                                     }
-                                    if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                        VibratoDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    if (hexToDecimalOnes(part_buffer[3])) {
+                                        VibratoDepth[chl] = hexToDecimalOnes(part_buffer[3]);
                                     }
                                     // printf("VIBRATO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
                                 }
@@ -1928,13 +1909,13 @@ void comp(void *arg) {
                                 enbVibrato[chl] = false;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 7) {
+                            if (part_buffer[2] == 7) {
                                 enbTremolo[chl] = true;
-                                if (hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                    TremoloSpeed[chl] = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                if (hexToDecimalTens(part_buffer[3])) {
+                                    TremoloSpeed[chl] = hexToDecimalTens(part_buffer[3]);
                                 }
-                                if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3])) {
-                                    TremoloDepth[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                if (hexToDecimalOnes(part_buffer[3])) {
+                                    TremoloDepth[chl] = hexToDecimalOnes(part_buffer[3]);
                                 }
                                 // TremoloPos[chl] = 0;
                                 // printf("TREMOLO SPD %d DPH %d\n", VibratoSpeed[chl], VibratoDepth[chl]);
@@ -1942,34 +1923,34 @@ void comp(void *arg) {
                                 enbTremolo[chl] = false;
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 9) {
-                                OfstCfg[chl] = part_buffer[part_buffer_point][tracker_point][chl][3] << 8;
+                            if (part_buffer[2] == 9) {
+                                OfstCfg[chl] = part_buffer[3] << 8;
                                 // printf("SMP OFST %d\n", OfstCfg[chl]);
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 12) {
-                                vol[chl] = part_buffer[part_buffer_point][tracker_point][chl][3];
+                            if (part_buffer[2] == 12) {
+                                vol[chl] = part_buffer[3];
                                 lastVol[chl] = vol[chl];
                                 enbPortTone[chl] = false;
                             }
                             enbRetrigger[chl] = false;
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 14) {
-                                uint8_t decimalTens = hexToDecimalTens(part_buffer[part_buffer_point][tracker_point][chl][3]);
-                                vol[chl] += (decimalTens == 10) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 11) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
+                            if (part_buffer[2] == 14) {
+                                uint8_t decimalTens = hexToDecimalTens(part_buffer[3]);
+                                vol[chl] += (decimalTens == 10) ? hexToDecimalOnes(part_buffer[3]) : ((decimalTens == 11) ? -hexToDecimalOnes(part_buffer[3]) : 0);
                                 vol[chl] = (vol[chl] > 64) ? 64 : ((vol[chl] < 1) ? 0 : vol[chl]);
-                                period[chl] += (decimalTens == 2) ? hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : ((decimalTens == 1) ? -hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) : 0);
+                                period[chl] += (decimalTens == 2) ? hexToDecimalOnes(part_buffer[3]) : ((decimalTens == 1) ? -hexToDecimalOnes(part_buffer[3]) : 0);
                                 if (decimalTens == 9) {
                                     enbRetrigger[chl] = true;
-                                    RetriggerConfig[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    RetriggerConfig[chl] = hexToDecimalOnes(part_buffer[3]);
                                     // printf("RETRIGGER %d\n", RetriggerConfig[chl]);
                                     volTemp[chl] = vol[chl];
                                 } else if (decimalTens == 6) {
-                                    if (hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]) == 0) {
-                                        rowLoopStart = tracker_point;
+                                    if (hexToDecimalOnes(part_buffer[3]) == 0) {
+                                        rowLoopStart = row_point;
                                         // printf("SET LOOP START %d\n", rowLoopStart);
                                     } else {
                                         if (rowLoopCont == 0) {
-                                            rowLoopCont = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                            rowLoopCont = hexToDecimalOnes(part_buffer[3]);
                                             // printf("SET LOOP CONT %d\n", rowLoopCont);
                                         } else {
                                             rowLoopCont--;
@@ -1981,27 +1962,26 @@ void comp(void *arg) {
                                         }
                                     }
                                 } else if (decimalTens == 12) {
-                                    cutTick[chl] = hexToDecimalOnes(part_buffer[part_buffer_point][tracker_point][chl][3]);
+                                    cutTick[chl] = hexToDecimalOnes(part_buffer[3]);
                                 }
                                 // printf("LINE VOL %s TO %d\n", (decimalTens == 10) ? "UP" : ((decimalTens == 11) ? "DOWN" : "UNCHANGED"), vol[chl]);
                             }
 
-                            if (part_buffer[part_buffer_point][tracker_point][chl][2] == 15) {
-                                if (part_buffer[part_buffer_point][tracker_point][chl][3] < 32) {
-                                    tick_speed = part_buffer[part_buffer_point][tracker_point][chl][3];
-                                    SPD = part_buffer[part_buffer_point][tracker_point][chl][3];
+                            if (part_buffer[2] == 15) {
+                                if (part_buffer[3] < 32) {
+                                    tick_speed = part_buffer[3];
+                                    SPD = part_buffer[3];
                                     // printf("SPD SET TO %d\n", tick_speed);
                                 } else {
-                                    BPM = part_buffer[part_buffer_point][tracker_point][chl][3];
+                                    BPM = part_buffer[3];
                                     TICK_NUL = roundf(SMP_RATE / (BPM * 0.4f));
                                     // printf("MTICK SET TO %d\n", TICK_NUL);
                                 }
                             }
 
-                            if ((!part_buffer[part_buffer_point][tracker_point][chl][2])
-                                    && part_buffer[part_buffer_point][tracker_point][chl][3]) {
+                            if ((!part_buffer[2]) && part_buffer[3]) {
                                 arp_p = 0;
-                                hexToDecimal(part_buffer[part_buffer_point][tracker_point][chl][3], &arpNote[0][chl], &arpNote[1][chl]);
+                                hexToDecimal(part_buffer[3], &arpNote[0][chl], &arpNote[1][chl]);
                                 arpFreq[0][chl] = patch_table[wave_info[smp_num[chl]][1]] / period[chl];
                                 arpFreq[1][chl] = freq_up(arpFreq[0][chl], arpNote[0][chl]);
                                 arpFreq[2][chl] = freq_up(arpFreq[0][chl], arpNote[1][chl]);
@@ -2013,48 +1993,44 @@ void comp(void *arg) {
                                     enbArp[chl] = false;
                                 }
                             }
-                            //if (chl == 3) {
-                            //printf("PART=%d CHL=%d PINT=%d SPED=%d VOLE=%d VOL_F=%f FREQ=%f EFX1=%d EFX2=%d NOTE=%d SMPL=%d\n",
-                            //    part_point, chl, tracker_point, tick_speed, vol[chl], vol_table[vol[chl]], frq[chl], part_buffer[part_buffer_point][tracker_point][chl][2], part_buffer[part_buffer_point][tracker_point][chl][3], part_buffer[part_buffer_point][tracker_point][chl][0], smp_num[chl]);
-                            //}
                             if (vol[chl]) {
                                 lastVol[chl] = vol[chl];
                             }
                         }
-                        tracker_point++;
+                        if (partUP) {partUP = false; part_point--; if (part_point < 0) part_point = NUM_PATTERNS-1;}
+                        if (partDOWN) {partDOWN = false; part_point++; if (part_point >= NUM_PATTERNS) part_point = 0;}
+                        row_point++;
                         if (enbRowLoop) {
-                            tracker_point = rowLoopStart;
+                            row_point = rowLoopStart;
                             enbRowLoop = false;
                             printf("SKIP TO %d\n", rowLoopStart);
                         }
-                        if ((tracker_point > 63) || skipToNextPart || skipToAnyPart) {
+                        if ((row_point > 63) || skipToNextPart || skipToAnyPart) {
                             if (recMod) {
                                 fflush(export_wav_file);
                             }
                             if (skipToRow) {
-                                tracker_point = skipToRow;
+                                row_point = skipToRow;
                                 skipToRow = 0;
                             } else {
-                                tracker_point = 0;
+                                row_point = 0;
                             }
-                            showPart++;
-                            if (showPart >= NUM_PATTERNS) {
-                                showPart = 0;
+                            part_point++;
+                            if (part_point >= NUM_PATTERNS) {
+                                part_point = 0;
                                 if (recMod) {
                                     wav_audio_close(export_wav_file);
                                     recMod = false;
                                 }
                             }
                             if (skipToAnyPart) {
-                                part_point = showPart = skipToAnyPart;
+                                part_point = skipToAnyPart;
                                 printf("SKIP TO %d\n", part_point);
                                 skipToAnyPart = false;
-                                read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[!part_buffer_point]);
-                                part_point++;
+                                // part_point++;
                             }
                             skipToNextPart = false;
-                            part_buffer_point = !part_buffer_point;
-                            loadOk = true;
+                            printf("NOW %d\n", part_point);
                         }
                     }
                     for (chl = 0; chl < 4; chl++) {
@@ -2135,47 +2111,25 @@ void comp(void *arg) {
                     vol[0] = 64;
                 }
             }
-            if (tracker_point > 63 || partDOWN) {
+            if (row_point > 63 || partDOWN) {
                 if (!partDOWN) {
-                    tracker_point = 0;
+                    row_point = 0;
                 }
                 partDOWN = false;
-                showPart++;
-                if (showPart >= NUM_PATTERNS) {
-                    showPart = 0;
-                    part_point = 1;
-                }
-                printf("SKIP TO %d\n", part_point);
-                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
-                read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
-                printf("%d\n", part_buffer_point);
-                // part_buffer_point = !part_buffer_point;
                 part_point++;
-                // part_point = showPart+1;
-                // loadOk = true;
+                if (part_point >= NUM_PATTERNS) {
+                    part_point = 0;
+                }
             }
-            if (tracker_point < 0 || partUP) {
+            if (row_point < 0 || partUP) {
                 if (!partUP) {
-                    tracker_point = 63;
+                    row_point = 63;
                 }
                 partUP = false;
-                showPart--;
-                printf("SKIP TO %d\n", part_point);
-                read_part_data((uint8_t*)tracker_data, part_table[showPart+1], part_buffer[!part_buffer_point]);
-                if (showPart < 0) {
-                    showPart = NUM_PATTERNS-1;
-                    part_point = 2;
-                    read_part_data((uint8_t*)tracker_data, part_table[0], part_buffer[!part_buffer_point]);
-                }
-                if (part_point <= 0) {
-                    part_point = NUM_PATTERNS;
-                }
-                read_part_data((uint8_t*)tracker_data, part_table[showPart], part_buffer[part_buffer_point]);
-                printf("%d\n", part_buffer_point);
-                // part_buffer_point = !part_buffer_point;
                 part_point--;
-                // part_point = showPart+1;
-                // loadOk = true;
+                if (part_point < 0) {
+                    part_point = NUM_PATTERNS-1;
+                }
             }
             if (playStat) {
                 for (uint8_t s = 0; s < 4; s++) {
@@ -2197,6 +2151,7 @@ void comp(void *arg) {
 }
 // COMP TASK END ------------------------------------------------
 FILE *f;
+/*
 void load(void *arg) {
     while(true) {
         if (part_buffer_point == 0 && loadOk) {
@@ -2219,6 +2174,7 @@ void load(void *arg) {
         vTaskDelay(64);
     }
 }
+*/
 
 void read_pattern_table() {
     for (uint8_t i = 0; i < 128; i++) {

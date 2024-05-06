@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 // #include <pwm_audio.h>
 #include "pwm_audio.h"
 #include <driver/gpio.h>
@@ -31,6 +32,7 @@
 #include "esp_dsp.h"
 #include "ESPRotary.h"
 #include "audioTypedef.h"
+#include <Adafruit_MPR121.h>
 
 #define MOUNT_POINT "/sdcard"
 
@@ -59,15 +61,23 @@ size_t export_wav_written = 0; // 已写入的数据量
 void *export_wav_buffer;
 uint8_t noteKeyStatus = 0;
 
-/*
-#define HSPI_MISO 16 //19 
-#define HSPI_MOSI 17 //23 
-#define HSPI_SCLK 18
-#define HSPI_CS0 10  // accel chip
-*/
-// Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);   //-Just used for setup
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_MPR121 touchPad = Adafruit_MPR121();
 ESPRotary rotary;
+
+typedef enum {
+    KEY_IDLE,
+    KEY_ATTACK,
+    KEY_RELEASE
+} key_status_t;
+
+typedef struct {
+    uint8_t num;
+    key_status_t status;
+} key_event_t;
+
+QueueHandle_t xTouchPadQueue;
+QueueHandle_t xOptionKeyQueue;
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -533,12 +543,14 @@ uint8_t skipToAnyPart = false;
 bool lcdOK = true;
 uint8_t BPM = 125;
 uint8_t SPD = 6;
+/*
 bool keyOK = false;
 bool keyUP = false;
 bool keyDOWN = false;
 bool keyL = false;
 bool keyR = false;
 bool keySpace = false;
+*/
 int8_t ChlPos = 0;
 // bool ChlMenu = false;
 int8_t ChlMenuPos = 0;
@@ -577,6 +589,7 @@ const char* findNote(int frequency) {
     return "???";
 }
 const char* fileSelect(const char* root_path) {
+    playStat = false;
     char path[256];
     uint8_t path_depth = 0;
     int16_t SelPos = 0;
@@ -587,6 +600,7 @@ const char* fileSelect(const char* root_path) {
     printf("%s\n", path);
     int count = list_directory(path, &files);
     bool emyDir = false;
+    key_event_t optionKeyEvent;
     for (;;) {
         char* showBuf;
         frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -626,78 +640,78 @@ const char* fileSelect(const char* root_path) {
             SelPos = 1;
             emyDir = true;
         }
+        playStat = false;
         frame.display();
         vTaskDelay(2);
-        keyR = playStat = false;
-        if (keyL) {
-            keyL = false;
-            if (path_depth > 0) {
-                for (uint16_t i = 0; i < count; i++) {
-                    free(files[i].name);
+        if (xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
+            switch (optionKeyEvent.num) {
+            case 3:
+                if (path_depth > 0) {
+                    for (uint16_t i = 0; i < count; i++) {
+                        free(files[i].name);
+                    }
+                    free(files);
+                    files = NULL;
+                    char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
+                    if (lastSlash != NULL) {
+                        *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                    }
+                    emyDir = false;
+                    count = list_directory(path, &files);
+                    printf("%s\n", path);
+                    path_depth--;
+                    SelPos = 0;
                 }
-                free(files);
-                files = NULL;
-                char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
-                if (lastSlash != NULL) {
-                    *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                break;
+            case 1:
+                SelPos--;
+                if (SelPos < 0) {
+                    SelPos = count-1;
                 }
-                emyDir = false;
-                count = list_directory(path, &files);
-                printf("%s\n", path);
-                path_depth--;
-                SelPos = 0;
-            }
-        }
-        if (keyUP) {
-            keyUP = false;
-            SelPos--;
-            if (SelPos < 0) {
-                SelPos = count-1;
-            }
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            SelPos++;
-            if (SelPos > count-1) {
-                SelPos = 0;
-            }
-        }
-        if (keyOK) {
-            keyOK = false;
-            if (emyDir) {
-                char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
-                if (lastSlash != NULL) {
-                    *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                break;
+            case 2:
+                SelPos++;
+                if (SelPos > count-1) {
+                    SelPos = 0;
                 }
-                emyDir = false;
-                count = list_directory(path, &files);
-                printf("%s\n", path);
-                SelPos = 0;
-                path_depth--;
-                continue;
-            }
-            if (files[SelPos].is_directory) {
-                if (strlen(path)+strlen(files[SelPos].name) > 255) {
-                    printf("PATH TO LONG\n");
-                    continue;
-                }
-                path_depth++;
-                printf("PATH %p\n", path);
-                sprintf(path, "%s/%s", path, files[SelPos].name);
-                // strcat(path, "/");
-                // strcat(path, files[SelPos].name);
-                for (uint16_t i = 0; i < count; i++) {
-                    free(files[i].name);
-                }
-                free(files);
-                files = NULL;
-                count = list_directory(path, &files);
-                printf("%s\n", path);
-                SelPos = 0;
-            } else {
                 break;
             }
-        }
+            if (optionKeyEvent.num == 5) {
+                if (emyDir) {
+                    char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
+                    if (lastSlash != NULL) {
+                        *lastSlash = '\0'; // 将最后一个斜杠替换为字符串结束符
+                    }
+                    emyDir = false;
+                    count = list_directory(path, &files);
+                    printf("%s\n", path);
+                    SelPos = 0;
+                    path_depth--;
+                    continue;
+                }
+                if (files[SelPos].is_directory) {
+                    if (strlen(path)+strlen(files[SelPos].name) > 255) {
+                        printf("PATH TO LONG\n");
+                        continue;
+                    }
+                    path_depth++;
+                    printf("PATH %p\n", path);
+                    sprintf(path, "%s/%s", path, files[SelPos].name);
+                    // strcat(path, "/");
+                    // strcat(path, files[SelPos].name);
+                    for (uint16_t i = 0; i < count; i++) {
+                        free(files[i].name);
+                    }
+                    free(files);
+                    files = NULL;
+                    count = list_directory(path, &files);
+                    printf("%s\n", path);
+                    SelPos = 0;
+                } else {
+                    break;
+                }
+            }
+        }}
     }
     fillMidRect(80, 20, 0x4208);
     drawMidRect(80, 20, ST7735_WHITE);
@@ -754,6 +768,7 @@ uint8_t showTmpEFX2_1;
 uint8_t showTmpEFX2_2;
 
 inline void fileOpt() {
+    key_event_t optionKeyEvent;
     for (;;) {
         long ret = read_tracker_file(fileSelect("/sdcard"));
         if (ret == -1) {
@@ -766,10 +781,9 @@ inline void fileOpt() {
             frame.setTextColor(ST7735_WHITE);
             frame.printf("THIS IS NOT A MOD FILE!");
             frame.display();
-            while(!keyOK) {
+            while(xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) != pdTRUE) {
                 vTaskDelay(4);
             }
-            keyOK = false;
             MainReDraw();
         } else if (ret == 0) {
             fillMidRect(148, 20, 0x4208);
@@ -781,10 +795,9 @@ inline void fileOpt() {
             frame.setTextColor(ST7735_WHITE);
             frame.printf("THIS FILE IS TOO LARGE!");
             frame.display();
-            while(!keyOK) {
+            while(xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) != pdTRUE) {
                 vTaskDelay(4);
             }
-            keyOK = false;
             MainReDraw();
         } else {
             break;
@@ -818,6 +831,7 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
 }
 
 int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt_init_val, uint8_t Xlen, ...) {
+    key_event_t optionKeyEvent;
     va_list args;
     va_start(args, total_options);
     uint8_t OriginX = frame.getCursorX();
@@ -846,22 +860,24 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
             frame.setCursor(CXTmp, frame.getCursorY()+3);
         }
         frame.printf("Close");
-        if (keyUP) {
-            keyUP = false;
-            current_option--;
-            if (current_option < 1) current_option = total_options+1;
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            current_option++;
-            if (current_option > total_options+1) current_option = 1;
-        }
-        if (keyOK) {
-            keyOK = false;
-            frame.setCursor(OriginX, OriginY);
-            if (current_option == total_options+1) break;
-            else return current_option - 1;
-        }
+        if (xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
+            switch (optionKeyEvent.num)
+            {
+            case 1:
+                current_option--;
+                if (current_option < 1) current_option = total_options+1;
+                break;
+            case 2:
+                current_option++;
+                if (current_option > total_options+1) current_option = 1;
+                break;
+            }
+            if (optionKeyEvent.num == 5) {
+                frame.setCursor(OriginX, OriginY);
+                if (current_option == total_options+1) break;
+                else return current_option - 1;
+            }
+        }}
         frame.display();
         vTaskDelay(2);
     }
@@ -2270,6 +2286,40 @@ void IRAM_ATTR setKeyOK() {
     keyOK = true;
 }
 
+void refesMpr121(void *arg) {
+    uint16_t lasttouched = 0;
+    uint16_t currtouched = 0;
+    Wire1.begin(15, 16);
+    touchPad.begin(0x5B, &Wire1);
+    key_event_t touchPadEvent;
+    for (;;) {
+        currtouched = touchPad.touched();
+        for (uint8_t i=0; i<12; i++) {
+            // it if *is* touched and *wasnt* touched before, alert!
+            if ((currtouched & _BV(i)) && !(lasttouched & _BV(i)) ) {
+                touchPadEvent.num = i;
+                touchPadEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", touchPadEvent.num);
+                }
+            }
+            if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
+                touchPadEvent.num = i;
+                touchPadEvent.status = KEY_RELEASE;
+                if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE", touchPadEvent.num);
+                }
+            }
+        }
+        lasttouched = currtouched;
+        vTaskDelay(32);
+    }
+}
+
 void input(void *arg) {
     pinMode(21, INPUT_PULLUP);
     rotary.begin(38, 39, 2);
@@ -2278,33 +2328,64 @@ void input(void *arg) {
     // rotary.setRightRotationHandler(showDirection);
     Serial.begin(115200);
     attachInterrupt(21, setKeyOK, RISING);
+    key_event_t optionKeyEvent;
     while (true) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
             if (received == 32) {
-                keySpace = true;
-                printf("SPACE\n");
+                optionKeyEvent.num = 6;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 119) {
-                keyUP = true;
-                printf("UP\n");
+                optionKeyEvent.num = 1;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 115) {
-                keyDOWN = true;
-                printf("DOWN\n");
+                optionKeyEvent.num = 2;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 97) {
-                keyL = true;
-                printf("L\n");
+                optionKeyEvent.num = 3;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 100) {
-                keyR = true;
-                printf("R\n");
+                optionKeyEvent.num = 4;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 108) {
-                keyOK = true;
-                printf("PLS OK\n");
+                optionKeyEvent.num = 5;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                }
             }
             if (received == 49) {
                 printf("INPUT SAMP NUM:\n");
@@ -2340,75 +2421,6 @@ void input(void *arg) {
             if (received == 109) {
                 printf("FREE MEM: %d\n", esp_get_free_heap_size());
             }
-            switch (received) {
-                case 101:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 1;}
-                    break;
-                case 52:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 2;}
-                    break;
-                case 114:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 3;}
-                    break;
-                case 53:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 4;}
-                    break;
-                case 116:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 5;}
-                    break;
-                case 121:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 6;}
-                    break;
-                case 55:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 7;}
-                    break;
-                case 117:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 8;}
-                    break;
-                case 56:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 9;}
-                    break;
-                case 105:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 10;}
-                    break;
-                case 57:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 11;}
-                    break;
-                case 111:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 12;}
-                    break;
-                case 112:
-                    if (noteKeyStatus)
-                         {noteKeyStatus = 0;}
-                    else {noteKeyStatus = 13;}
-                    break;
-            }
-            printf("NOTE KEY STAUS %d\n", noteKeyStatus);
-            // Serial.flush();
         }
         vTaskDelay(2);
         rotary.loop();
@@ -2417,6 +2429,8 @@ void input(void *arg) {
 
 void setup()
 {
+    xTouchPadQueue = xQueueCreate(8, sizeof(key_event_t));
+    xOptionKeyQueue = xQueueCreate(8, sizeof(key_event_t));
     initDelayBuffer();
     esp_err_t ret;
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
@@ -2482,8 +2496,10 @@ void setup()
     i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
+    vTaskDelay(256);
+    xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
     printf("MAIN EXIT\n");
 }
 

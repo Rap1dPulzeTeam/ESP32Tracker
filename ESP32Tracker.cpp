@@ -79,6 +79,16 @@ typedef struct {
 QueueHandle_t xTouchPadQueue;
 QueueHandle_t xOptionKeyQueue;
 
+#define readOptionKeyEvent xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0)
+#define readTouchPadKeyEvent xQueueReceive(xTouchPadQueue, &touchPadEvent, 0)
+
+#define KEY_UP 1
+#define KEY_DOWN 2
+#define KEY_L 3
+#define KEY_R 4
+#define KEY_OK 5
+#define KEY_SPACE 6
+
 class  aFrameBuffer : public Adafruit_GFX {
   public:
     uint16_t lcd_buffer[40960];
@@ -151,28 +161,20 @@ float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
 const float patch_table[16] = {3546836.0, 3572537.835745873, 3598425.9175884672, 3624501.595143772, 3650766.227807657, 3677221.184826728, 3703867.8453697185, 3730707.5985993897,
                          3347767.391694687, 3372026.6942439806, 3396461.7896998064, 3421073.9519300302, 3445864.464033491, 3470834.61840689, 3495985.7168121682, 3521319.0704443706};
 
-inline void hexToDecimal(uint8_t num, uint8_t *tens, uint8_t *ones) {
-    *tens = (num >> 4) & 0x0F;
-    *ones = num & 0x0F;
-}
-inline uint8_t hexToDecimalTens(uint8_t num) {
-    return (num >> 4) & 0x0F;
-}
-inline uint8_t hexToDecimalOnes(uint8_t num) {
-    return num & 0x0F;
-}
-inline uint8_t hexToRow(uint8_t num) {
-    return hexToDecimalTens(num)*10 + hexToDecimalOnes(num);
-}
-inline float freq_up(float base_freq, uint8_t n) {
-    return base_freq * powf(2.0f, (n / 12.0f));
-}
-inline uint8_t unpackDPCM(uint8_t data, uint8_t cont) {
-    return (data & (0x03 << (cont << 1))) >> (cont << 1);
-}
-inline uint8_t packDPCM(uint8_t input, uint8_t data, uint8_t cont) {
-    return input |= ((data & 0x03) << (cont << 1));
-}
+#define hexToDecimalTens(num) (((num) >> 4) & 0x0F)
+#define hexToDecimalOnes(num) ((num) & 0x0F)
+#define hexToRow(num) (hexToDecimalTens(num) * 10 + hexToDecimalOnes(num))
+#define freq_up(base_freq, n) ((base_freq) * powf(2.0f, ((n) / 12.0f)))
+
+#define drawMidRect(w, h, color) \
+    frame.drawRect(80 - ((w) >> 1), 64 - ((h) >> 1), (80 + ((w) >> 1)) - (80 - ((w) >> 1)), (64 + ((h) >> 1)) - (64 - ((h) >> 1)), (color))
+
+#define fillMidRect(w, h, color) \
+    frame.fillRect(80 - ((w) >> 1), 64 - ((h) >> 1), (80 + ((w) >> 1)) - (80 - ((w) >> 1)), (64 + ((h) >> 1)) - (64 - ((h) >> 1)), (color))
+
+#define setMidCusr(w, h, ofst) \
+    frame.setCursor(80 - ((w) >> 1) + (ofst), 64 - ((h) >> 1) + (ofst))
+
 inline int clamp(int value, int min, int max) {
     if (value < min)
         return min;
@@ -643,9 +645,9 @@ const char* fileSelect(const char* root_path) {
         playStat = false;
         frame.display();
         vTaskDelay(2);
-        if (xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
+        if (readOptionKeyEvent == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
             switch (optionKeyEvent.num) {
-            case 3:
+            case KEY_L:
                 if (path_depth > 0) {
                     for (uint16_t i = 0; i < count; i++) {
                         free(files[i].name);
@@ -663,20 +665,20 @@ const char* fileSelect(const char* root_path) {
                     SelPos = 0;
                 }
                 break;
-            case 1:
+            case KEY_UP:
                 SelPos--;
                 if (SelPos < 0) {
                     SelPos = count-1;
                 }
                 break;
-            case 2:
+            case KEY_DOWN:
                 SelPos++;
                 if (SelPos > count-1) {
                     SelPos = 0;
                 }
                 break;
             }
-            if (optionKeyEvent.num == 5) {
+            if (optionKeyEvent.num == KEY_OK) {
                 if (emyDir) {
                     char *lastSlash = strrchr(path, '/'); // 查找最后一个斜杠
                     if (lastSlash != NULL) {
@@ -732,18 +734,6 @@ const char* fileSelect(const char* root_path) {
     return full_path;
 }
 
-void drawMidRect(uint8_t w, uint8_t h, uint16_t color) {
-    frame.drawRect(80-(w>>1), 64-(h>>1), (80+(w>>1))-(80-(w>>1)), (64+(h>>1))-(64-(h>>1)), color);
-}
-
-void fillMidRect(uint8_t w, uint8_t h, uint16_t color) {
-    frame.fillRect(80-(w>>1), 64-(h>>1), (80+(w>>1))-(80-(w>>1)), (64+(h>>1))-(64-(h>>1)), color);
-}
-
-void setMidCusr(uint8_t w, uint8_t h, int8_t ofst) {
-    frame.setCursor(80-(w>>1)+ofst, 64-(h>>1)+ofst);
-}
-
 inline void MainReDraw() {
     frame.fillScreen(ST7735_BLACK);
     frame.setTextWrap(true);
@@ -761,12 +751,6 @@ inline void MainReDraw() {
     frame.setTextSize(0);
 }
 
-uint16_t showTmpNote;
-uint8_t showTmpSamp;
-uint8_t showTmpEFX1;
-uint8_t showTmpEFX2_1;
-uint8_t showTmpEFX2_2;
-
 inline void fileOpt() {
     key_event_t optionKeyEvent;
     for (;;) {
@@ -781,7 +765,7 @@ inline void fileOpt() {
             frame.setTextColor(ST7735_WHITE);
             frame.printf("THIS IS NOT A MOD FILE!");
             frame.display();
-            while(xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) != pdTRUE) {
+            while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
             }
             MainReDraw();
@@ -795,7 +779,7 @@ inline void fileOpt() {
             frame.setTextColor(ST7735_WHITE);
             frame.printf("THIS FILE IS TOO LARGE!");
             frame.display();
-            while(xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) != pdTRUE) {
+            while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
             }
             MainReDraw();
@@ -804,6 +788,54 @@ inline void fileOpt() {
         }
     }
 }
+
+void loadFileInit() {
+    part_point = 0;
+    row_point = 0;
+    data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
+    mute[0] = mute[1] = mute[2] = mute[3] = 0;
+    period[0] = period[1] = period[2] = period[3] = 0;
+    frq[0] = frq[1] = frq[2] = frq[3] = 0;
+    fileOpt();
+    read_pattern_table();
+    read_wave_info();
+    comp_wave_ofst();
+    windowsClose = true;
+    MainReDraw();
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+    frame.fillRect(0, 10, 160, 8, 0x2104);
+    row_point = 0;
+}
+
+void newFileInit() {
+    part_point = 0;
+    row_point = 0;
+    data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
+    mute[0] = mute[1] = mute[2] = mute[3] = 0;
+    period[0] = period[1] = period[2] = period[3] = 0;
+    frq[0] = frq[1] = frq[2] = frq[3] = 0;
+    new_tracker_file();
+    read_pattern_table();
+    read_wave_info();
+    comp_wave_ofst();
+    windowsClose = true;
+    MainReDraw();
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+    frame.fillRect(0, 10, 160, 8, 0x2104);
+    row_point = 0;
+}
+
+uint16_t showTmpNote;
+uint8_t showTmpSamp;
+uint8_t showTmpEFX1;
+uint8_t showTmpEFX2_1;
+uint8_t showTmpEFX2_2;
 
 void windowsMenu(const char *title, uint8_t current_option, uint8_t total_options, uint8_t Xlen, ...) {
     va_list args;
@@ -860,14 +892,14 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
             frame.setCursor(CXTmp, frame.getCursorY()+3);
         }
         frame.printf("Close");
-        if (xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0) == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
+        if (readOptionKeyEvent == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
             switch (optionKeyEvent.num)
             {
-            case 1:
+            case KEY_UP:
                 current_option--;
                 if (current_option < 1) current_option = total_options+1;
                 break;
-            case 2:
+            case KEY_DOWN:
                 current_option++;
                 if (current_option > total_options+1) current_option = 1;
                 break;
@@ -894,6 +926,8 @@ void MainPage() {
     uint8_t sideMenu = 0;
     uint8_t fileMenu = 0;
     uint16_t viewTmp[4];
+    key_event_t optionKeyEvent;
+    BaseType_t PerStat = pdFALSE;
     for (;;) {
         frame.setCursor(0, 10);
         frame.print(song_name);
@@ -1021,6 +1055,14 @@ void MainPage() {
         frame.setCursor(1, 28);
         frame.printf("SPD: %d", SPD);
 
+        PerStat = readOptionKeyEvent;
+
+        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_SPACE) {
+            PerStat = pdFALSE;
+            if (!playStat) row_point = 0;
+            playStat = !playStat;
+        }
+
         if (sideMenu) {
             for (uint8_t i = 0; i < 3; i++) {
                 if (sideMenu-1 == i) {
@@ -1031,129 +1073,88 @@ void MainPage() {
             }
 
             if (fileMenu) {
+                // sideMenu = 2;
                 windowsMenu("FILE", fileMenu, 5, 80, "New", "Open", "Save", "Setting", "Close");
-                keyL = keyR = false;
-                if (keyUP) {
-                    keyUP = false;
-                    fileMenu--;
-                    if (fileMenu < 1) {
-                        fileMenu = 5;
-                    }
-                }
-                if (keyDOWN) {
-                    keyDOWN = false;
-                    fileMenu++;
-                    if (fileMenu > 5) {
-                        fileMenu = 1;
-                    }
-                }
-            }
-
-            if (keyDOWN) {
-                keyDOWN = false;
-                if (sideMenu == 4) {
-                    partDOWN = true;
-                }
-            }
-            if (keyUP) {
-                keyUP = false;
-                if (sideMenu == 4) {
-                    partUP = true;
-                }
-            }
-
-            if (keyL) {
-                keyL = false;
-                sideMenu--;
-                if (sideMenu < 1) {
-                    sideMenu = 4;
-                }
-            }
-            if (keyR) {
-                keyR = false;
-                sideMenu++;
-                if (sideMenu > 4) {
-                    sideMenu = 1;
-                }
-            }
-            if (keyOK) {
-                keyOK = false;
-                if (fileMenu) {
-                    if (fileMenu == 5) {
-                        fileMenu = 0;
-                        windowsClose = true;
-                    }
-                    if (fileMenu == 4) {
-                        MenuPos = 3;
+                if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+                    PerStat = pdFALSE;
+                    switch (optionKeyEvent.num)
+                    {
+                    case KEY_UP:
+                        fileMenu--;
+                        if (fileMenu < 1) fileMenu = 5;
+                        break;
+                    
+                    case KEY_DOWN:
+                        fileMenu++;
+                        if (fileMenu > 5) fileMenu = 1;
                         break;
                     }
-                    if (fileMenu == 3) {
-                        playStat = false;
-                        recMod = true;
-                        printf("SAVE!\n");
-                        vTaskDelay(8);
-                        // memset(buffer, 0, 6892 * sizeof(int16_t));
-                        char *export_wave_name = (char*)malloc(strlen(song_name)+32);
-                        sprintf(export_wave_name, "/sdcard/%s_record.wav", song_name);
-                        export_wav_file = wav_audio_start(export_wave_name, 44100, 16, 2);
-                        vTaskDelay(8);
-                        free(export_wave_name);
-                        playStat = true;
+                    if (optionKeyEvent.num == KEY_OK) {
+                        printf("KEY_OK PUSHED!\n");
+                        if (fileMenu == 5) {
+                            fileMenu = 0;
+                            windowsClose = true;
+                        }
+                        if (fileMenu == 4) {
+                            MenuPos = 3;
+                            break;
+                        }
+                        if (fileMenu == 3) {
+                            playStat = false;
+                            recMod = true;
+                            printf("SAVE!\n");
+                            vTaskDelay(8);
+                            // memset(buffer, 0, 6892 * sizeof(int16_t));
+                            char *export_wave_name = (char*)malloc(strlen(song_name)+32);
+                            sprintf(export_wave_name, "/sdcard/%s_record.wav", song_name);
+                            export_wav_file = wav_audio_start(export_wave_name, 44100, 16, 2);
+                            vTaskDelay(8);
+                            free(export_wave_name);
+                            playStat = true;
+                        }
+                        if (fileMenu == 2) {
+                            playStat = false;
+                            vTaskDelay(16);
+                            sideMenu = 0;
+                            fileMenu = 0;
+                            loadFileInit();
+                        }
+                        if (fileMenu == 1) {
+                            playStat = false;
+                            vTaskDelay(16);
+                            sideMenu = 0;
+                            fileMenu = 0;
+                            newFileInit();
+                        }
                     }
-                    if (fileMenu == 2) {
-                        loadOk = false;
-                        playStat = false;
-                        vTaskDelay(32);
-                        part_point = 0;
-                        row_point = 0;
-                        data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
-                        mute[0] = mute[1] = mute[2] = mute[3] = 0;
-                        period[0] = period[1] = period[2] = period[3] = 0;
-                        // data_index_int[0] = data_index_int[1] = data_index_int[2] = data_index_int[3] = 0;
-                        fileOpt();
-                        read_pattern_table();
-                        read_wave_info();
-                        comp_wave_ofst();
-                        fileMenu = 0;
-                        windowsClose = true;
-                        MainReDraw();
-                        frame.drawFastHLine(0, 9, 160, 0xe71c);
-                        frame.drawFastHLine(0, 18, 160, 0xe71c);
-                        frame.fillRect(113, 19, 47, 7, 0xa514);
-                        frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
-                        frame.fillRect(0, 10, 160, 8, 0x2104);
-                        uint8_t sideMenu = 0;
-                        uint8_t fileMenu = 0;
-                        row_point = 0;
-                        keySpace = false;
-                    }
-                    if (fileMenu == 1) {
-                        loadOk = false;
-                        playStat = false;
-                        vTaskDelay(32);
-                        part_point = 0;
-                        new_tracker_file();
-                        read_pattern_table();
-                        read_wave_info();
-                        comp_wave_ofst();
-                        row_point = 0;
-                        data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
-                        mute[0] = mute[1] = mute[2] = mute[3] = 0;
-                        period[0] = period[1] = period[2] = period[3] = 0;
-                        fileMenu = 0;
-                        windowsClose = true;
-                        MainReDraw();
-                        frame.drawFastHLine(0, 9, 160, 0xe71c);
-                        frame.drawFastHLine(0, 18, 160, 0xe71c);
-                        frame.fillRect(113, 19, 47, 7, 0xa514);
-                        frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
-                        frame.fillRect(0, 10, 160, 8, 0x2104);
-                        uint8_t sideMenu = 0;
-                        uint8_t fileMenu = 0;
-                        row_point = 0;
-                        keySpace = false;
-                    }
-                } else {
+                }
+            }
+
+            if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+                PerStat = pdFALSE;
+                switch (optionKeyEvent.num)
+                {
+                case KEY_DOWN:
+                    if (sideMenu == 4) partDOWN = true;
+                    break;
+
+                case KEY_UP:
+                    if (sideMenu == 4) partUP = true;
+                    break;
+
+                case KEY_L:
+                    sideMenu--;
+                    if (sideMenu < 1) sideMenu = 4;
+                    break;
+
+                case KEY_R:
+                    sideMenu++;
+                    if (sideMenu > 4) sideMenu = 1;
+                    break;
+                }
+                // printf("S2 %d\n", optionKeyEvent.num);
+                if (optionKeyEvent.num == KEY_OK) {
+                    printf("KEYOK OK!\n");
                     if (sideMenu == 3) {
                         printf("SAMP\n");
                     }
@@ -1162,6 +1163,7 @@ void MainPage() {
                         fileMenu = 1;
                     }
                     if (sideMenu == 1) {
+                        printf("CLOSE SIDEMENU\n");
                         sideMenu = 0;
                         windowsClose = true;
                     }
@@ -1181,46 +1183,40 @@ void MainPage() {
             char menuShow[13];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
             windowsMenu(menuShow, ChlMenuPos, 3, 90, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
-            if (keyUP) {
-                keyUP = false;
-                ChlMenuPos--;
-                if (ChlMenuPos < 1) {
-                    ChlMenuPos = 3;
-                }
-            }
-            if (keyDOWN) {
-                keyDOWN = false;
-                ChlMenuPos++;
-                if (ChlMenuPos > 3) {
-                    ChlMenuPos = 1;
-                }
-            }
-            if (keyL) {
-                keyL = false;
-                ChlPos--;
-                if (ChlPos < 1) {
-                    ChlPos = 4;
-                }
-            }
-            if (keyR) {
-                keyR = false;
-                ChlPos++;
-                if (ChlPos > 4) {
-                    ChlPos = 1;
-                }
-            }
-            if (keyOK) {
-                keyOK = false;
-                if (ChlMenuPos == 3) {
-                    ChlMenuPos = 0;
-                    windowsClose = true;
-                }
-                if (ChlMenuPos == 1) {
-                    mute[ChlPos-1] = !mute[ChlPos-1];
-                }
-                if (ChlMenuPos == 2) {
-                    MenuPos = 1;
+            if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+                PerStat = pdFALSE;
+                switch (optionKeyEvent.num)
+                {
+                case KEY_UP:
+                    ChlMenuPos--;
+                    if (ChlMenuPos < 1) ChlMenuPos = 3;
                     break;
+                
+                case KEY_DOWN:
+                    ChlMenuPos++;
+                    if (ChlMenuPos > 3) ChlMenuPos = 1;
+                    break;
+
+                case KEY_L:
+                    ChlPos--;
+                    if (ChlPos < 1) ChlPos = 4;
+                    break;
+
+                case KEY_R:
+                    ChlPos++;
+                    if (ChlPos > 4) ChlPos = 1;
+                    break;
+                }
+                if (optionKeyEvent.num == KEY_OK) {
+                    if (ChlMenuPos == 3) {
+                        ChlMenuPos = 0;
+                        windowsClose = true;
+                    }
+                    if (ChlMenuPos == 1) mute[ChlPos-1] = !mute[ChlPos-1];
+                    if (ChlMenuPos == 2) {
+                        MenuPos = 1;
+                        break;
+                    }
                 }
             }
         }
@@ -1230,43 +1226,32 @@ void MainPage() {
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
         if (!ChlMenuPos && !sideMenu) {
-            if (keyOK) {
-                keyOK = false;
-                if (ChlPos) {
-                    ChlMenuPos = 1;
-                } else {
-                    sideMenu = 1;
+            if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+                PerStat = pdFALSE;
+                if (optionKeyEvent.num == KEY_OK) {
+                    if (ChlPos) ChlMenuPos = 1;
+                    else sideMenu = 1;
+                }
+                switch (optionKeyEvent.num)
+                {
+                case KEY_UP:
+                    row_point--;
+                    break;
+                
+                case KEY_DOWN:
+                    row_point++;
+                    break;
+
+                case KEY_L:
+                    ChlPos--;
+                    if (ChlPos < 0) ChlPos = 4;
+                    break;
+                
+                case KEY_R:
+                    ChlPos++;
+                    if (ChlPos > 4) ChlPos = 0;
                 }
             }
-            if (keyUP) {
-                keyUP = false;
-                row_point--;
-            }
-            if (keyDOWN) {
-                keyDOWN = false;
-                row_point++;
-            }
-            if (keyL) {
-                keyL = false;
-                ChlPos--;
-                if (ChlPos < 0) {
-                    ChlPos = 4;
-                }
-            }
-            if (keyR) {
-                keyR = false;
-                ChlPos++;
-                if (ChlPos > 4) {
-                    ChlPos = 0;
-                }
-            }
-        }
-        if (keySpace) {
-            keySpace = false;
-            if (!playStat) {
-                row_point = 0;
-            }
-            playStat = !playStat;
         }
     }
 }
@@ -1282,6 +1267,7 @@ void ChlEdit() {
     int8_t EditPos = 0;
     uint16_t viewTmp[4];
     bool enbRec = false;
+    key_event_t optionKeyEvent;
     for (;;) {
         frame.fillRect(0, 40, 77, 88, ST7735_BLACK);
         frame.fillRect(0, 40, vol[ChlPos-1], 8, (((vol[ChlPos-1]>>1) << 11) | (clamp(vol[ChlPos-1], 0, 63) << 5) | (vol[ChlPos-1]>>1)));//0x8578);
@@ -1379,36 +1365,35 @@ void ChlEdit() {
         frame.drawFastVLine(95, 0, 128, 0xad7f);
         frame.drawFastVLine(159, 0, 128, 0xc618);
         frame.display();
-        if (keyOK) {
-            keyOK = false;
-            MenuPos = 0;
-            break;
-        }
-        if (keyUP) {
-            keyUP = false;
-            row_point--;
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            row_point++;
-        }
-        if (keyL) {
-            keyL = false;
-            EditPos--;
-            if (EditPos < 0) {
-                EditPos = 4;
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == KEY_OK) {
+                MenuPos = 0;
+                break;
             }
-        }
-        if (keyR) {
-            keyR = false;
-            EditPos++;
-            if (EditPos > 4) {
-                EditPos = 0;
+            switch (optionKeyEvent.num)
+            {
+            case KEY_UP:
+                row_point--;
+                break;
+            
+            case KEY_DOWN:
+                row_point++;
+                break;
+            
+            case KEY_L:
+                EditPos--;
+                if (EditPos < 0) EditPos = 4;
+                break;
+            
+            case KEY_R:
+                EditPos++;
+                if (EditPos > 4) EditPos = 0;
+                break;
+
+            case KEY_SPACE:
+                playStat = !playStat;
+                break;
             }
-        }
-        if (keySpace) {
-            keySpace = false;
-            playStat = !playStat;
         }
         vTaskDelay(1);
     }
@@ -1432,6 +1417,7 @@ int parseWavHeader(FILE* file, WavHeader_t* header) {
 }
 
 void wav_player() {
+    key_event_t optionKeyEvent;
     playStat = false;
     FILE *wave_file;
     size_t bytes_read;
@@ -1484,29 +1470,31 @@ void wav_player() {
         MAX_COMP_FINISH = true;
         i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
         printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
-        if (keyL) {
-            keyL = false;
-            fseek(wave_file, -10240*16, SEEK_CUR);
-        }
-        if (keyR) {
-            keyR = false;
-            fseek(wave_file, 10240*16, SEEK_CUR);
-        }
-        if (keyUP) {
-            keyUP = false;
-            i2s_vol += 0.05f;
-            printf("%.2f\n", i2s_vol);
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            i2s_vol -= 0.05f;
-            printf("%.2f\n", i2s_vol);
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            switch (optionKeyEvent.num)
+            {
+            case KEY_L:
+                fseek(wave_file, -10240*16, SEEK_CUR);
+                break;
             
-        }
-        if (keyOK) {
-            keyOK = false;
-            i2s_vol = 1.0f;
-            break;
+            case KEY_R:
+                fseek(wave_file, 10240*16, SEEK_CUR);
+                break;
+
+            case KEY_UP:
+                i2s_vol += 0.05f;
+                printf("%.2f\n", i2s_vol);
+                break;
+
+            case KEY_DOWN:
+                i2s_vol -= 0.05f;
+                printf("%.2f\n", i2s_vol);
+                break;
+            }
+            if (optionKeyEvent.num == KEY_OK) {
+                i2s_vol = 1.0f;
+                break;
+            }
         }
         refs_p++;
         vTaskDelay(1);
@@ -1520,7 +1508,6 @@ void wav_player() {
     vTaskDelay(16);
     i2s_zero_dma_buffer(I2S_NUM_0);
     i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
-    keyOK = false;
     MenuPos = 0;
     view_mode = false;
     vTaskDelay(64);
@@ -1537,6 +1524,7 @@ void filterSetting() {
     frame.printf("FILTERS\n");
     frame.setTextSize(0);
     frame.drawFastHLine(0, 26, 160, 0xa6bf);
+    key_event_t optionKeyEvent;
     for (;;) {
         frame.fillRect(0, 27, 160, 107, ST7735_BLACK);
         frame.setCursor(0, 31);
@@ -1559,27 +1547,30 @@ void filterSetting() {
         }
         frame.display();
         vTaskDelay(4);
-        if (keyL) {
-            keyL = false;
-            fltrPos--;
-            if (fltrPos < 0) {MenuPos = 3; break;};
-        }
-        if (keyR) {
-            keyR = false;
-            fltrPos++;
-            if (fltrPos > 3) fltrPos = 0;
-        }
-        if (keyUP) {
-            keyUP = false;
-            cutOffFreq[fltrPos]+=500;
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            cutOffFreq[fltrPos]-=500;
-        }
-        if (keyOK) {
-            keyOK = false;
-            enbFltr[fltrPos] = !enbFltr[fltrPos];
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == KEY_L) {
+                fltrPos--;
+                if (fltrPos < 0) {MenuPos = 3; break;};
+            }
+            switch (optionKeyEvent.num)
+            {
+            case KEY_R:
+                fltrPos++;
+                if (fltrPos > 3) fltrPos = 0;
+                break;
+            
+            case KEY_UP:
+                cutOffFreq[fltrPos]+=500;
+                break;
+
+            case KEY_DOWN:
+                cutOffFreq[fltrPos]-=500;
+                break;
+            
+            case KEY_OK:
+                enbFltr[fltrPos] = !enbFltr[fltrPos];
+                break;
+            }
         }
     }
 }
@@ -1587,6 +1578,7 @@ void filterSetting() {
 void Setting() {
 
     const uint8_t SETTING_NUM = 4;
+    key_event_t optionKeyEvent;
 
     const char *menuStr[SETTING_NUM] = {"Linear interp", "Filter Setting", "WAV Player", "Close"};
     uint8_t optPos = 0;
@@ -1608,32 +1600,27 @@ void Setting() {
         }
         frame.display();
         vTaskDelay(2);
-        if (keyOK) {
-            keyOK = false;
-            if (optPos == 0) {
-                int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 2, enbLine+1, 90, "OFF", "ON");
-                if (menuRtrn != -1) enbLine = menuRtrn;
-                printf("MENU RETURN %d\n", menuRtrn);
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == KEY_OK) {
+                if (optPos == 0) {
+                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 2, enbLine+1, 90, "OFF", "ON");
+                    if (menuRtrn != -1) enbLine = menuRtrn;
+                    printf("MENU RETURN %d\n", menuRtrn);
+                }
+                if (optPos == 1) {MenuPos = 4; break;}
+                if (optPos == 2) wav_player();
+                if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
-            if (optPos == 1) {MenuPos = 4; break;}
-            if (optPos == 2) wav_player();
-            if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
-        }
-        if (keyL) {
-            keyL = false;
-            enbLine = false;
-        }
-        if (keyR) {
-            keyR = false;
-            enbLine = true;
-        }
-        if (keyUP) {
-            keyUP = false;
-            optPos--;
-        }
-        if (keyDOWN) {
-            keyDOWN = false;
-            optPos++;
+            switch (optionKeyEvent.num)
+            {
+            case KEY_UP:
+                optPos--;
+                break;
+            
+            case KEY_DOWN:
+                optPos++;
+                break;
+            }
         }
     }
 }
@@ -1886,7 +1873,8 @@ void comp(void *arg) {
                                 if (part_buffer[2] == 5) {
                                     enbPortTone[chl] = true;
                                 }
-                                hexToDecimal(part_buffer[3], &volUp[chl], &volDown[chl]);
+                                volUp[chl] = hexToDecimalTens(part_buffer[3]);
+                                volDown[chl] = hexToDecimalOnes(part_buffer[3]);
                                 // printf("VOL+=%d -=%d\n", volUp[chl], volDown[chl]);
                             } else {
                                 volUp[chl] = volDown[chl] = 0;
@@ -1997,7 +1985,10 @@ void comp(void *arg) {
 
                             if ((!part_buffer[2]) && part_buffer[3]) {
                                 arp_p = 0;
-                                hexToDecimal(part_buffer[3], &arpNote[0][chl], &arpNote[1][chl]);
+
+                                arpNote[0][chl] = hexToDecimalTens(part_buffer[3]);
+                                arpNote[1][chl] = hexToDecimalOnes(part_buffer[3]);
+
                                 arpFreq[0][chl] = patch_table[wave_info[smp_num[chl]][1]] / period[chl];
                                 arpFreq[1][chl] = freq_up(arpFreq[0][chl], arpNote[0][chl]);
                                 arpFreq[2][chl] = freq_up(arpFreq[0][chl], arpNote[1][chl]);
@@ -2275,15 +2266,15 @@ const char* root_path = "/spiffs";
 void rotate(ESPRotary& rotary) {
     printf("ROTARY %d\n", (int)rotary.getDirection());
     if ((uint8_t)rotary.getDirection() == 255) {
-        keyUP = true;
+        //keyUP = true;
     }
     if ((uint8_t)rotary.getDirection() == 1) {
-        keyDOWN = true;
+        //keyDOWN = true;
     }
 }
 
 void IRAM_ATTR setKeyOK() {
-    keyOK = true;
+    // keyOK = true;
 }
 
 void refesMpr121(void *arg) {
@@ -2336,55 +2327,55 @@ void input(void *arg) {
             if (received == 32) {
                 optionKeyEvent.num = 6;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 119) {
                 optionKeyEvent.num = 1;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 115) {
                 optionKeyEvent.num = 2;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 97) {
                 optionKeyEvent.num = 3;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 100) {
                 optionKeyEvent.num = 4;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 108) {
                 optionKeyEvent.num = 5;
                 optionKeyEvent.status = KEY_ATTACK;
-                if (xQueueSend(xTouchPadQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", optionKeyEvent.num);
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 49) {

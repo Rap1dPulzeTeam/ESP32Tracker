@@ -510,6 +510,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     int16_t sample1 = ((int8_t)tracker_data[(int)data_index[chl] + smp_start] * (vole << 1));
     float result;
 
+    // 确保只能启用一种插值算法
     if ((isline && isCos) || (isline && isCubic) || (isCos && isCubic)) {
         isCubic = false;
         isline = false;

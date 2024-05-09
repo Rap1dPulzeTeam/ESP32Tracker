@@ -59,7 +59,7 @@ bool recMod = false;
 FILE *export_wav_file; // WAV文件指针
 size_t export_wav_written = 0; // 已写入的数据量
 void *export_wav_buffer;
-uint8_t noteKeyStatus = 0;
+uint8_t inputOct = 2;
 
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 Adafruit_MPR121 touchPad = Adafruit_MPR121();
@@ -88,6 +88,8 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_R 4
 #define KEY_OK 5
 #define KEY_SPACE 6
+#define KEY_A 7
+#define KEY_B 8
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -134,6 +136,8 @@ float *buffer_ch[NUM_CHANNELS];
 void* buffer;
 float time_step = 1.0 / SMP_RATE;
 bool enbLine = false;
+bool enbCos = false;
+bool enbCubic = false;
 
 size_t wrin;
 uint8_t stp;
@@ -155,6 +159,7 @@ uint32_t wave_MAX_R_OUT = 0;
 bool MAX_COMP_FINISH = false;
 
 bool enbFltr[4] = {false, false, false, false};
+bool enbDelay[4] = {false, false, false, false};
 
 float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
 
@@ -505,33 +510,83 @@ uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
 int8_t lastVol[4];
 float sin_index;
-inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline) {
+inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
+    // 如果音量为0，频率小于等于0，或该通道被静音，则返回0
     if (vole == 0 || freq <= 0 || mute[chl]) {
         return 0;
     }
-    // freq *= sinf(sin_index)*128;
-    // sin_index+=0.1; 
+
+    // 更新数据索引，根据频率和采样率计算新的数据索引
     data_index[chl] += freq / SMP_RATE;
 
+    // 如果启用了循环并且数据索引超出循环范围，则重置数据索引到循环起点
     if (isLoop && data_index[chl] >= (loopStart + loopLen)) {
         data_index[chl] = loopStart;
+    // 如果未启用循环且数据索引超出样本大小，则将音量设置为0并返回0
     } else if (!isLoop && data_index[chl] >= smp_size) {
         vol[chl] = 0;
         return 0;
     }
 
-    float sample1 = (float)((int8_t)tracker_data[(int)data_index[chl] + smp_start] << 6) * vol_table[vole];
-    float sample2 = 0.0f;
+    // 获取当前索引位置的采样值，并根据音量调整
+    int16_t sample1 = ((int8_t)tracker_data[(int)data_index[chl] + smp_start] * (vole << 1));
+    float result;
 
-    if (isline && (int)data_index[chl] < smp_size - 1) {
-        sample2 = (float)((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] << 6) * vol_table[vole];
-        float frac = data_index[chl] - (int)data_index[chl];
-        if (enbFltr[chl]) return lowPassFilterSingleSample((1.0f - frac) * sample1 + frac * sample2, chl, cutOffFreq[chl], SMP_RATE);
-        else return (1.0f - frac) * sample1 + frac * sample2;
+    // 确保只能启用一种插值算法
+    if ((isline && isCos) || (isline && isCubic) || (isCos && isCubic)) {
+        // 如果多种插值算法都启用，抛出异常或设置默认行为（这里选择禁用线性和余弦插值，只启用三次样条插值）
+        isline = false;
+        isCos = false;
     }
 
-    if (enbFltr[chl]) return lowPassFilterSingleSample(sample1, chl, cutOffFreq[chl], SMP_RATE);
-    else return sample1;
+    // 如果启用了线性插值且当前索引小于样本大小的最后一个索引，则进行线性插值
+    if (isline && (int)data_index[chl] < smp_size - 1) {
+        // 获取下一个索引位置的采样值，并根据音量调整
+        int16_t sample2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
+        // 计算当前索引的小数部分
+        float frac = data_index[chl] - (int)data_index[chl];
+        // 使用线性插值计算结果
+        result = (1.0f - frac) * sample1 + frac * sample2;
+    }
+    // 如果启用了余弦插值且当前索引小于样本大小的最后一个索引，则进行余弦插值
+    else if (isCos && (int)data_index[chl] < smp_size - 1) {
+        // 获取下一个索引位置的采样值，并根据音量调整
+        int16_t sample2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
+        // 计算当前索引的小数部分
+        float frac = data_index[chl] - (int)data_index[chl];
+        // 计算余弦插值因子
+        float f_t = (1 - cos(M_PI * frac)) / 2;
+        // 使用余弦插值计算结果
+        result = (1.0f - f_t) * sample1 + f_t * sample2;
+    }
+    // 如果启用了三次样条插值且当前索引小于样本大小的倒数第三个索引，则进行三次样条插值
+    else if (isCubic && (int)data_index[chl] < smp_size - 2) {
+        // 获取周围四个采样值，并根据音量调整
+        int16_t y0 = ((int8_t)tracker_data[(int)data_index[chl] - 1 + smp_start] * (vole << 1));
+        int16_t y1 = sample1;
+        int16_t y2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
+        int16_t y3 = ((int8_t)tracker_data[(int)data_index[chl] + 2 + smp_start] * (vole << 1));
+        // 计算当前索引的小数部分
+        float frac = data_index[chl] - (int)data_index[chl];
+        // 使用三次样条插值公式计算结果
+        result = y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0)));
+    }
+    else {
+        // 如果未启用任何插值，则直接使用当前采样值
+        result = sample1;
+    }
+
+    // 如果启用了滤波器，则对结果应用低通滤波
+    if (enbFltr[chl]) {
+        result = lowPassFilterSingleSample(result, chl, cutOffFreq[chl], SMP_RATE);
+    }
+    // 如果启用了延迟效果，则对结果应用延迟处理
+    if (enbDelay[chl]) {
+        result = audioDelay(result, 2048, 0.23f, 0.8f, 0.2f, chl);
+    }
+    
+    // 返回处理后的结果
+    return result;
 }
 // AUDIO DATA COMP END ------------------------------------------
 
@@ -565,6 +620,14 @@ bool partDOWN = false;
 
 #define NUM_RANGES 3
 #define NOTES_PER_RANGE 12
+uint16_t midi_period_table[NUM_RANGES][NOTES_PER_RANGE] = {
+    // C-1 to B-1
+    {856, 808, 762, 720, 678, 640, 604, 570, 538, 508, 480, 453},
+    // C-2 to B-2
+    {428, 404, 381, 360, 339, 320, 302, 285, 269, 254, 240, 226},
+    // C-3 to B-3
+    {214, 202, 190, 180, 170, 160, 151, 143, 135, 127, 120, 113}
+};
 typedef struct {
     const int frequency;
     const char *note_name;
@@ -928,6 +991,7 @@ void MainPage() {
     uint16_t viewTmp[4];
     key_event_t optionKeyEvent;
     BaseType_t PerStat = pdFALSE;
+    bool fnA = false;
     for (;;) {
         frame.setCursor(0, 10);
         frame.print(song_name);
@@ -1006,7 +1070,6 @@ void MainPage() {
         for (int8_t i = -1; i < 2; i++) {
             if ((part_point+i >= 0) && (part_point+i < NUM_PATTERNS)) {
                 frame.printf("%3d %3d\n", part_point+i, part_table[part_point+i]);
-                // frame.printf("888|888\n");
             } else {
                 frame.printf("\n");
             }
@@ -1018,8 +1081,6 @@ void MainPage() {
                 frame.setTextColor(0xf7be);
                 frame.printf("%2d", row_point+i);
                 for (uint8_t chl = 0; chl < 4; chl++) {
-                    //showTmpNote = part_buffer[part_buffer_point][row_point+i][chl][0];
-                    //showTmpSamp = part_buffer[part_buffer_point][row_point+i][chl][1];
                     read_part_data(tracker_data, part_table[part_point], row_point+i, chl, viewTmp);
                     showTmpNote = viewTmp[0];
                     showTmpSamp = viewTmp[1];
@@ -1046,16 +1107,24 @@ void MainPage() {
                 frame.printf("\n");
             }
         }
+        read_part_data(tracker_data, part_table[part_point], row_point, ChlPos-1, viewTmp);
         frame.setTextColor(ST7735_WHITE);
 
         frame.fillRect(0, 19, 112, 21, 0x3186);
         frame.setCursor(1, 20);
-        frame.printf("BPM: %d %d", BPM, part_point);
+        frame.printf("BPM: %3d  OCT: %2d", BPM, inputOct);
 
         frame.setCursor(1, 28);
-        frame.printf("SPD: %d", SPD);
+        frame.printf("SPD: %2d   SMP: %2d", SPD, ChlPos > 0 ? smp_num[ChlPos-1] : 0);
 
         PerStat = readOptionKeyEvent;
+
+        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_A) {
+            if (optionKeyEvent.status == KEY_ATTACK) fnA = true;
+            else fnA = false;
+        }
+
+        // printf("FnA STAT %d\n", fnA);
 
         if (PerStat == pdTRUE && optionKeyEvent.num == KEY_SPACE) {
             PerStat = pdFALSE;
@@ -1221,8 +1290,6 @@ void MainPage() {
             }
         }
 
-        frame.display();
-
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
         if (!ChlMenuPos && !sideMenu) {
@@ -1235,11 +1302,13 @@ void MainPage() {
                 switch (optionKeyEvent.num)
                 {
                 case KEY_UP:
-                    row_point--;
+                    if (fnA) inputOct++;
+                    else row_point--;
                     break;
                 
                 case KEY_DOWN:
-                    row_point++;
+                    if (fnA) inputOct--;
+                    else row_point++;
                     break;
 
                 case KEY_L:
@@ -1253,6 +1322,7 @@ void MainPage() {
                 }
             }
         }
+        frame.display();
     }
 }
 
@@ -1440,7 +1510,7 @@ void wav_player() {
     frame.fillScreen(ST7735_BLACK);
     frame.setTextColor(ST7735_WHITE);
     frame.setCursor(0, 0);
-    frame.printf("PLATING...\n\n\n\n\n");
+    frame.printf("PLAYING...\n\n\n\n\n");
     frame.setTextColor(0x52aa);
     frame.printf("WAV File Information:\nSample Rate: %u Hz\nBits Per Sample: %u\nChannels: %u", header.sampleRate, header.bitsPerSample, header.numChannels);
     frame.setTextColor(ST7735_WHITE);
@@ -1580,7 +1650,7 @@ void Setting() {
     const uint8_t SETTING_NUM = 4;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Linear interp", "Filter Setting", "WAV Player", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Close"};
     uint8_t optPos = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -1603,8 +1673,28 @@ void Setting() {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
                 if (optPos == 0) {
-                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 2, enbLine+1, 90, "OFF", "ON");
-                    if (menuRtrn != -1) enbLine = menuRtrn;
+                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 4, enbCubic ? 3 : (enbCos ? 2 : (enbLine ? 1 : (!enbCos && !enbLine && !enbCubic ? 4 : -1))), 90, "Linear", "Cosine", "Cubic Spline", "OFF");
+                    switch (menuRtrn)
+                    {
+                    case 0:
+                        enbLine = true;
+                        enbCubic = enbCos = false;
+                        break;
+                    
+                    case 1:
+                        enbCos = true;
+                        enbCubic = enbLine = false;
+                        break;
+
+                    case 2:
+                        enbCubic = true;
+                        enbCos = enbLine = false;
+                        break;
+
+                    case 3:
+                        enbCubic = enbCos = enbLine = false;
+                        break;
+                    }
                     printf("MENU RETURN %d\n", menuRtrn);
                 }
                 if (optPos == 1) {MenuPos = 4; break;}
@@ -1729,18 +1819,17 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (wave_info[smp_num[chl]][4] > 2) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
                     }
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
-                        // roundf(buffer_ch[chlMap[0]][buffPtr]
-                        roundf(audioDelay(buffer_ch[chlMap[0]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 0)
-                                + audioDelay(buffer_ch[chlMap[1]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 1));
+                        roundf(buffer_ch[chlMap[0]][buffPtr]
+                                + buffer_ch[chlMap[1]][buffPtr]);
                 buffer16BitStro[buffPtr].dataR = (int16_t)
-                        roundf(audioDelay(buffer_ch[chlMap[2]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 2)
-                                + audioDelay(buffer_ch[chlMap[3]][buffPtr], 4096, 0.2f, 0.8f, 0.2f, 3));
+                        roundf(buffer_ch[chlMap[2]][buffPtr]
+                                + buffer_ch[chlMap[3]][buffPtr]);
                 Mtick++;
                 buffPtr++;
                 if (buffPtr >= BUFF_SIZE) {
@@ -2092,9 +2181,9 @@ void comp(void *arg) {
             if (!view_mode) {
                 for (uint16_t i = 0; i < BUFF_SIZE; i++) {
                     if (wave_info[smp_num[0]][4] > 2) {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false, false, false);
                     } else {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false);
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false, false, false);
                     }
                     buffer16BitStro[i].dataL = (int16_t)
                             (buffer_ch[chlMap[0]][i]
@@ -2320,12 +2409,14 @@ void input(void *arg) {
     Serial.begin(115200);
     attachInterrupt(21, setKeyOK, RISING);
     key_event_t optionKeyEvent;
+    bool fnA = false;
+    bool fnB = false;
     while (true) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
             if (received == 32) {
-                optionKeyEvent.num = 6;
+                optionKeyEvent.num = KEY_SPACE;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -2334,7 +2425,7 @@ void input(void *arg) {
                 }
             }
             if (received == 119) {
-                optionKeyEvent.num = 1;
+                optionKeyEvent.num = KEY_UP;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -2343,7 +2434,7 @@ void input(void *arg) {
                 }
             }
             if (received == 115) {
-                optionKeyEvent.num = 2;
+                optionKeyEvent.num = KEY_DOWN;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -2352,7 +2443,7 @@ void input(void *arg) {
                 }
             }
             if (received == 97) {
-                optionKeyEvent.num = 3;
+                optionKeyEvent.num = KEY_L;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -2361,7 +2452,7 @@ void input(void *arg) {
                 }
             }
             if (received == 100) {
-                optionKeyEvent.num = 4;
+                optionKeyEvent.num = KEY_R;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -2370,12 +2461,22 @@ void input(void *arg) {
                 }
             }
             if (received == 108) {
-                optionKeyEvent.num = 5;
+                optionKeyEvent.num = KEY_OK;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
                 } else {
                     printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
+                }
+            }
+            if (received == 122) {
+                optionKeyEvent.num = KEY_A;
+                optionKeyEvent.status = fnA ? KEY_RELEASE : KEY_ATTACK;
+                fnA = !fnA;
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
                 }
             }
             if (received == 49) {

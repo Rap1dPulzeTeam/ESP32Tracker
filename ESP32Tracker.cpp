@@ -2224,30 +2224,6 @@ void comp(void *arg) {
 }
 // COMP TASK END ------------------------------------------------
 FILE *f;
-/*
-void load(void *arg) {
-    while(true) {
-        if (part_buffer_point == 0 && loadOk) {
-            printf("LOADING BUF1\n");
-            if (part_point >= NUM_PATTERNS) {
-                part_point = 0;
-            }
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[1]);
-            part_point++;
-            loadOk = false;
-        } else if (part_buffer_point == 1 && loadOk) {
-            printf("LOADING BUF0\n");
-            if (part_point >= NUM_PATTERNS) {
-                part_point = 0;
-            }
-            read_part_data((uint8_t*)tracker_data, part_table[part_point], part_buffer[0]);
-            part_point++;
-            loadOk = false;
-        }
-        vTaskDelay(64);
-    }
-}
-*/
 
 void read_pattern_table() {
     for (uint8_t i = 0; i < 128; i++) {
@@ -2310,21 +2286,6 @@ void comp_wave_ofst() {
         wav_ofst[i+1] += (wav_ofst[i] + wave_info[i][0]);
     }
 }
-/*
-void read_wave_data(uint8_t (*wave_info)[5], uint8_t* tracker_data, uint8_t** wave_data) {
-    for (int i = 0; i < 32; i++) {
-        uint16_t sample_length = wave_info[i][0] * 2;
-        wave_data[i] = (uint8_t*)malloc(sample_length * sizeof(uint8_t));
-        if (wave_data[i] == NULL) {
-            ESP_LOGE("WAVE READ", "MEMRY MALLOC FAIL!");
-            exit(EXIT_FAILURE);
-        }
-        for (int j = 0; j < sample_length; j++) {
-            wave_data[i][j] = tracker_data[20 + i * 30 + j];
-        }
-    }
-}
-*/
 
 #define TAG "TAG"
 const char* root_path = "/spiffs";

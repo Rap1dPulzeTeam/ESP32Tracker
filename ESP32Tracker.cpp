@@ -60,6 +60,7 @@ FILE *export_wav_file;
 size_t export_wav_written = 0;
 void *export_wav_buffer;
 uint8_t inputOct = 2;
+bool editMod = false;
 
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 Adafruit_MPR121 touchPad = Adafruit_MPR121();
@@ -90,6 +91,7 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_SPACE 6
 #define KEY_A 7
 #define KEY_B 8
+#define KEY_C 9
 
 class  aFrameBuffer : public Adafruit_GFX {
   public:
@@ -477,7 +479,7 @@ inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint8_t
     part_data[3] = byte4;
 }
 
-void write_part_data(uint8_t *tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint8_t row_data[4]) {
+void write_part_data(uint8_t *tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint16_t row_data[4]) {
     uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
 
     uint16_t byte_index = row * NUM_CHANNELS * 4 + chl * 4;
@@ -950,11 +952,71 @@ void MainPage() {
     uint8_t fileMenu = 0;
     uint16_t viewTmp[4];
     key_event_t optionKeyEvent;
+    key_event_t touchPadEvent;
     BaseType_t PerStat = pdFALSE;
     bool fnA = false;
+    bool fnB = false;
+    bool fnC = false;
     for (;;) {
+        PerStat = readOptionKeyEvent;
         frame.setCursor(0, 10);
         frame.print(song_name);
+
+        if (PerStat == pdTRUE) {
+            if (optionKeyEvent.num == KEY_A) {
+                if (optionKeyEvent.status == KEY_ATTACK) fnA = true;
+                else fnA = false;
+            } else
+            if (optionKeyEvent.num == KEY_C) 
+                if (optionKeyEvent.status == KEY_ATTACK) editMod = !editMod;
+        }
+
+        // printf("FnA STAT %d\n", fnA);
+
+        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_SPACE) {
+            PerStat = pdFALSE;
+            if (!playStat) row_point = 0;
+            playStat = !playStat;
+        }
+
+        if (!ChlMenuPos && !sideMenu) {
+            if (readTouchPadKeyEvent == pdTRUE) if (editMod && touchPadEvent.status == KEY_ATTACK) {
+                uint16_t tmpData[4];
+                read_part_data(tracker_data, part_table[part_point], ChlPos-1, row_point, tmpData);
+                tmpData[0] = midi_period_table[inputOct][touchPadEvent.num];
+                tmpData[1] = smp_num[ChlPos-1];
+                write_part_data(tracker_data, part_table[part_point], ChlPos-1, row_point, tmpData);
+            }
+            if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+                PerStat = pdFALSE;
+                if (optionKeyEvent.num == KEY_OK) {
+                    if (ChlPos) ChlMenuPos = 1;
+                    else sideMenu = 1;
+                }
+                switch (optionKeyEvent.num)
+                {
+                case KEY_UP:
+                    if (fnA) inputOct++;
+                    else row_point--;
+                    break;
+                
+                case KEY_DOWN:
+                    if (fnA) inputOct--;
+                    else row_point++;
+                    break;
+
+                case KEY_L:
+                    ChlPos--;
+                    if (ChlPos < 0) ChlPos = 4;
+                    break;
+                
+                case KEY_R:
+                    ChlPos++;
+                    if (ChlPos > 4) ChlPos = 0;
+                }
+            }
+        }
+
         if (windowsClose) {
             windowsClose = false;
             frame.fillRect(0, 24, 160, 30, ST7735_BLACK);
@@ -1013,7 +1075,7 @@ void MainPage() {
             }
         }
 
-        frame.drawRect(0, 87, 160, 9, 0xd69a);
+        frame.drawRect(0, 87, 160, 9, editMod ? 0xfc51 : 0xa61f);
 
         frame.setCursor(116, 29);
         frame.fillRect(115, 28, 21, 25, 0x2104);
@@ -1072,25 +1134,10 @@ void MainPage() {
 
         frame.fillRect(0, 19, 112, 21, 0x3186);
         frame.setCursor(1, 20);
-        frame.printf("BPM: %3d  OCT: %2d", BPM, inputOct);
+        frame.printf("BPM: %3d  FCT: %2d", BPM, inputOct+1);
 
         frame.setCursor(1, 28);
         frame.printf("SPD: %2d   SMP: %2d", SPD, ChlPos > 0 ? smp_num[ChlPos-1] : 0);
-
-        PerStat = readOptionKeyEvent;
-
-        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_A) {
-            if (optionKeyEvent.status == KEY_ATTACK) fnA = true;
-            else fnA = false;
-        }
-
-        // printf("FnA STAT %d\n", fnA);
-
-        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_SPACE) {
-            PerStat = pdFALSE;
-            if (!playStat) row_point = 0;
-            playStat = !playStat;
-        }
 
         if (sideMenu) {
             for (uint8_t i = 0; i < 3; i++) {
@@ -1252,36 +1299,6 @@ void MainPage() {
 
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
-        if (!ChlMenuPos && !sideMenu) {
-            if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
-                PerStat = pdFALSE;
-                if (optionKeyEvent.num == KEY_OK) {
-                    if (ChlPos) ChlMenuPos = 1;
-                    else sideMenu = 1;
-                }
-                switch (optionKeyEvent.num)
-                {
-                case KEY_UP:
-                    if (fnA) inputOct++;
-                    else row_point--;
-                    break;
-                
-                case KEY_DOWN:
-                    if (fnA) inputOct--;
-                    else row_point++;
-                    break;
-
-                case KEY_L:
-                    ChlPos--;
-                    if (ChlPos < 0) ChlPos = 4;
-                    break;
-                
-                case KEY_R:
-                    ChlPos++;
-                    if (ChlPos > 4) ChlPos = 0;
-                }
-            }
-        }
         frame.display();
     }
 }
@@ -2342,7 +2359,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK", touchPadEvent.num);
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
                 }
             }
             if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
@@ -2351,7 +2368,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE", touchPadEvent.num);
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
                 }
             }
         }
@@ -2371,6 +2388,7 @@ void input(void *arg) {
     key_event_t optionKeyEvent;
     bool fnA = false;
     bool fnB = false;
+    bool fnC = false;
     while (true) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
@@ -2439,6 +2457,16 @@ void input(void *arg) {
                     printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
                 }
             }
+            if (received == 99) {
+                optionKeyEvent.num = KEY_C;
+                optionKeyEvent.status = fnC ? KEY_RELEASE : KEY_ATTACK;
+                fnC = !fnC;
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
+                }
+            }
             if (received == 49) {
                 printf("INPUT SAMP NUM:\n");
                 for (;;) {
@@ -2481,8 +2509,8 @@ void input(void *arg) {
 
 void setup()
 {
-    xTouchPadQueue = xQueueCreate(8, sizeof(key_event_t));
-    xOptionKeyQueue = xQueueCreate(8, sizeof(key_event_t));
+    xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
+    xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     initDelayBuffer();
     esp_err_t ret;
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);

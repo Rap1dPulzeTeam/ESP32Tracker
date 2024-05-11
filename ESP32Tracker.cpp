@@ -39,6 +39,10 @@
 #define TFT_DC 3
 #define TFT_CS 10
 #define TFT_RST 8
+uint8_t tracker_data_header[1084];
+uint8_t **tracker_data_pattern;
+uint8_t **tracker_data_sample;
+uint8_t *tracker_data_total;
 uint8_t *tracker_data;
 void fillMidRect(uint8_t w, uint8_t h, uint16_t color);
 void drawMidRect(uint8_t w, uint8_t h, uint16_t color);
@@ -205,8 +209,8 @@ void limit(float a) {
 
 #define DELAY_BUFFER_SIZE 8192
 
-float delayBuffer[4][DELAY_BUFFER_SIZE];
-int delayWriteIndex[4] = {0, 0, 0, 0};
+float *delayBuffer[6];
+int delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
 
 void initDelayBuffer() {
     for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
@@ -214,6 +218,7 @@ void initDelayBuffer() {
         delayBuffer[1][i] = 0.0f;
         delayBuffer[2][i] = 0.0f;
         delayBuffer[3][i] = 0.0f;
+        delayBuffer[4][i] = 0.0f;
     }
 }
 
@@ -329,11 +334,27 @@ float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
+float global_vol = 0.1f;
 
 int16_t temp;
 uint16_t wave_info[33][5];
 uint32_t wav_ofst[34];
 bool mute[4] = {false, false, false, false};
+
+bool master_delay = false;
+
+int8_t audio_master_write(const void *src, size_t size, size_t len) {
+    for (uint16_t i = 0; i < len; i++) {
+        if (size == 4) {
+            buffer16BitStro[i].dataL *= global_vol;
+            buffer16BitStro[i].dataR *= global_vol;
+        } else {
+            return -1;
+        }
+    }
+    i2s_write(I2S_NUM_0, src, len*size, &wrin, portMAX_DELAY);
+    return 0;
+}
 
 // OSC START -----------------------------------------------------
 void display(void *arg) {
@@ -1515,7 +1536,8 @@ void wav_player() {
         wave_MAX_R_OUT = wave_MAX_R / 2560;
         wave_MAX_R = 0;
         MAX_COMP_FINISH = true;
-        i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
+        // i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
+        if (audio_master_write(buffer, sizeof(audio16BitStro), 2560) != 0) exit(-1);
         printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             switch (optionKeyEvent.num)
@@ -1815,7 +1837,8 @@ void comp(void *arg) {
                         wav_audio_write(buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, export_wav_file);
                         printf("WRIN %d\n", wrin);
                     } else {
-                        i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                        // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                        if (audio_master_write(buffer, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
                         // printf("WRIN %d\n", wrin);
                     }
                 }
@@ -2214,7 +2237,8 @@ void comp(void *arg) {
             // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
             if (!view_mode) {
                 frq[0] = patch_table[wave_info[smp_num[0]][1]] / period[0];
-                i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                if (audio_master_write(buffer, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
                 vTaskDelay(4);
             } else {
                 vTaskDelay(32);

@@ -143,6 +143,7 @@ float time_step = 1.0 / SMP_RATE;
 bool enbLine = false;
 bool enbCos = false;
 bool enbCubic = false;
+int8_t vol[CHL_NUM] = {0, 0, 0, 0};
 
 size_t wrin;
 uint8_t stp;
@@ -164,7 +165,7 @@ uint32_t wave_MAX_R_OUT = 0;
 bool MAX_COMP_FINISH = false;
 
 bool enbFltr[4] = {false, false, false, false};
-bool enbDelay[4] = {false, false, false, false};
+bool enbDelay[4] = {true, true, true, true};
 
 float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
 
@@ -196,6 +197,7 @@ inline int clamp(int value, int min, int max) {
 float lmt = 0;
 uint16_t lmtP = 0;
 float comper = 1;
+bool mute[4] = {false, false, false, false};
 
 void limit(float a) {
     lmt += 2 + (a > 0 ? a : -a) * 15 / 512.0f;
@@ -208,17 +210,32 @@ void limit(float a) {
 }
 
 #define DELAY_BUFFER_SIZE 8192
+#define THRESHOLD 1 // Define a threshold to determine when the channel is no longer active
 
-float *delayBuffer[6];
+float *delayBuffer[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
 int delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
+bool channelActive[6] = {false, false, false, false, false};
+uint8_t sigBase[6] = {100, 100, 100, 100, 100, 100};
 
 void initDelayBuffer() {
-    for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
-        delayBuffer[0][i] = 0.0f;
-        delayBuffer[1][i] = 0.0f;
-        delayBuffer[2][i] = 0.0f;
-        delayBuffer[3][i] = 0.0f;
-        delayBuffer[4][i] = 0.0f;
+    // Initialization is not needed here anymore
+}
+
+void activateChannel(int chl) {
+    if (!channelActive[chl]) {
+        delayBuffer[chl] = (float *)calloc(DELAY_BUFFER_SIZE, sizeof(float));
+        if (delayBuffer[chl] != NULL) {
+            delayWriteIndex[chl] = 0;
+            channelActive[chl] = true;
+        }
+    }
+}
+
+void deactivateChannel(int chl) {
+    if (channelActive[chl]) {
+        free(delayBuffer[chl]);
+        delayBuffer[chl] = NULL;
+        channelActive[chl] = false;
     }
 }
 
@@ -227,15 +244,29 @@ float audioDelay(float inputSample, int delayLength, float decayRate, float dryM
         delayLength = DELAY_BUFFER_SIZE - 1;
     }
 
-    int readIndex = delayWriteIndex[chl] - delayLength;
-    if (readIndex < 0) {
-        readIndex += DELAY_BUFFER_SIZE;
+    if (vol[chl]) {
+        activateChannel(chl);
     }
 
-    float outputSample = delayBuffer[chl][readIndex];
-    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
-    delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
-    return dryMix * inputSample + wetMix * outputSample;
+    if (channelActive[chl]) {
+        int readIndex = delayWriteIndex[chl] - delayLength;
+        if (readIndex < 0) {
+            readIndex += DELAY_BUFFER_SIZE;
+        }
+
+        float outputSample = delayBuffer[chl][readIndex];
+        delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
+        sigBase[chl] *= decayRate;
+        delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
+
+        if (sigBase[chl] <= THRESHOLD) {
+            deactivateChannel(chl);
+        }
+
+        return dryMix * inputSample + wetMix * outputSample;
+    } else {
+        return dryMix * inputSample; // If the channel is not active, return dry mix only
+    }
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
@@ -328,18 +359,16 @@ void load(void *arg);
 // **************************INIT*END****************************
 
 char ten[24];
-int8_t vol[CHL_NUM] = {0, 0, 0, 0};
 int16_t period[4] = {0, 0, 0, 0};
 float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
-float global_vol = 0.1f;
+float global_vol = 0.2f;
 
 int16_t temp;
 uint16_t wave_info[33][5];
 uint32_t wav_ofst[34];
-bool mute[4] = {false, false, false, false};
 
 bool master_delay = false;
 
@@ -393,7 +422,8 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
-                sprintf(ten, " %d", esp_get_free_heap_size());
+                // sprintf(ten, " %d", esp_get_free_heap_size());
+                sprintf(ten, "%d %d %d %d %d %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
                 addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
                 addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
                 addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
@@ -2496,7 +2526,7 @@ void setup()
 {
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
-    initDelayBuffer();
+    // initDelayBuffer();
     esp_err_t ret;
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {

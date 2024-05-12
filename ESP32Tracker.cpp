@@ -33,6 +33,7 @@
 #include "ESPRotary.h"
 #include "audioTypedef.h"
 #include <Adafruit_MPR121.h>
+#include "abcd.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -41,9 +42,9 @@
 #define TFT_RST 8
 uint8_t tracker_data_header[1084];
 uint8_t **tracker_data_pattern;
-uint8_t **tracker_data_sample;
+uint8_t *tracker_data_sample[32];
 uint8_t *tracker_data_total;
-uint8_t *tracker_data;
+// uint8_t *tracker_data;
 void fillMidRect(uint8_t w, uint8_t h, uint16_t color);
 void drawMidRect(uint8_t w, uint8_t h, uint16_t color);
 void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
@@ -69,6 +70,9 @@ bool editMod = false;
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 Adafruit_MPR121 touchPad = Adafruit_MPR121();
 ESPRotary rotary;
+bool RtyL = false;
+bool RtyR = false;
+bool RtyB = false;
 
 typedef enum {
     KEY_IDLE,
@@ -97,15 +101,13 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_B 8
 #define KEY_C 9
 
-class  aFrameBuffer : public Adafruit_GFX {
+class aFrameBuffer : public Adafruit_GFX {
   public:
     uint16_t lcd_buffer[40960];
-    aFrameBuffer(int16_t w, int16_t h): Adafruit_GFX(w, h)
-    {
-        for (int i = 0; i < h * w; i++)
-        lcd_buffer[i] = 0;
+    aFrameBuffer(int16_t w, int16_t h): Adafruit_GFX(w, h) {
+        printf("DISPLAY READLY!\n");
     }
-    void drawPixel( int16_t x, int16_t y, uint16_t color)
+    IRAM_ATTR void drawPixel(int16_t x, int16_t y, uint16_t color)
     {
         if (x > 159)
             return;
@@ -118,19 +120,7 @@ class  aFrameBuffer : public Adafruit_GFX {
         lcd_buffer[x + y * _width] = color;
     }
 
-    void display()
-    {
-        tft.setAddrWindow(0, 0, 160, 128);
-        digitalWrite(TFT_DC, HIGH);
-        digitalWrite(TFT_CS, LOW);
-        SPI.beginTransaction(SPISettings(79000000, MSBFIRST, SPI_MODE0));
-        for (uint16_t i = 0; i < 160 * 128; i++)
-        {
-            SPI.transfer16(lcd_buffer[i]);
-        }
-        SPI.endTransaction();
-        digitalWrite(TFT_CS, HIGH);
-    }
+    void display() {tft.drawRGBBitmap(0, 0, lcd_buffer, 160, 128);}
 };
 
 aFrameBuffer frame(160, 128);
@@ -273,28 +263,43 @@ uint8_t* read_file(const char* path, long* file_size) {
 
 long read_tracker_file(const char* path) {
     printf("NOW READ FILE %s\n", path);
+    FILE *file = fopen(path, "rb");
     long file_size;
+    /*
     if (tracker_data != NULL) {
         free(tracker_data);
         printf("FREE MEM\n");
         tracker_data = NULL;
     }
-    tracker_data = read_file(path, &file_size);
-    printf("READ FINISH\n");
-    if ((tracker_data == NULL) || (file_size == 0)) {
-        printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, file_size);
-        free(tracker_data);
-        tracker_data = NULL;
+    */
+    // tracker_data = read_file(path, &file_size);
+    size_t readRelly = fread(tracker_data_header, 1, 1084, file);
+    printf("READ HEADER FINISH\n");
+    if (readRelly < 1084) {//(tracker_data == NULL) || (file_size == 0)) {
+        printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, readRelly);
         return 0;
     } else {
-        if ((tracker_data[1080] != 0x4D) ||
-            (tracker_data[1081] != 0x2E) ||
-            (tracker_data[1082] != 0x4B) ||
-            (tracker_data[1083] != 0x2E)) {
-            printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, tracker_data[1080], tracker_data[1081], tracker_data[1082], tracker_data[1083]);
-            free(tracker_data);
-            tracker_data = NULL;
+        if ((tracker_data_header[1080] != 0x4D) ||
+            (tracker_data_header[1081] != 0x2E) ||
+            (tracker_data_header[1082] != 0x4B) ||
+            (tracker_data_header[1083] != 0x2E)) {
+            printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, tracker_data_header[1080],
+                tracker_data_header[1081],
+                    tracker_data_header[1082],
+                        tracker_data_header[1083]);
             return -1;
+        }
+        read_pattern_table(tracker_data_header);
+        read_wave_info(tracker_data_header);
+        uint8_t pat_max = find_max(NUM_PATTERNS)+1;
+        tracker_data_pattern = (uint8_t**)malloc(pat_max);
+        for (uint8_t i = 0; i < pat_max; i++) {
+            tracker_data_pattern[i] = (uint8_t*)malloc(1024);
+            if (tracker_data_pattern[i] == NULL) {printf("READ PATTERN MALLOC FAIL! EXITNG...\n"); exit(-1);}
+            fread(tracker_data_pattern[i], 1, 1024, file);
+        }
+        for (uint8_t i = 0; i < 32; i++) {
+            if (wave_info[i+1][0]) fread(tracker_data_sample[i], 1, wave_info[i+1][0], file);
         }
         printf("READ %s FINISH! FILE SIZE IS %ld\n", path, file_size);
     }
@@ -387,7 +392,7 @@ int8_t audio_master_write(const void *src, size_t size, size_t len) {
     wave_MAX_R = 0;
     MAX_COMP_FINISH = true;
     i2s_write(I2S_NUM_0, src, len*size, &wrin, portMAX_DELAY);
-    printf("L=%5d R=%5d\n", wave_MAX_L_OUT, wave_MAX_R_OUT);
+    // printf("L=%5d R=%5d\n", wave_MAX_L_OUT, wave_MAX_R_OUT);
     return 0;
 }
 
@@ -926,7 +931,7 @@ uint8_t showTmpEFX2_2;
 
 void windowsMenu(const char *title, uint8_t current_option, uint8_t total_options, uint8_t Xlen, ...) {
     va_list args;
-    va_start(args, total_options);
+    va_start(args, Xlen);
     uint8_t OriginX = frame.getCursorX();
     uint8_t OriginY = frame.getCursorY();
     uint8_t Ylen = ((total_options)*11)+18;
@@ -952,7 +957,7 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
 int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt_init_val, uint8_t Xlen, ...) {
     key_event_t optionKeyEvent;
     va_list args;
-    va_start(args, total_options);
+    va_start(args, Xlen);
     uint8_t OriginX = frame.getCursorX();
     uint8_t OriginY = frame.getCursorY();
     uint8_t Ylen = ((total_options+1)*11)+18;
@@ -1019,7 +1024,10 @@ void MainPage() {
     bool fnA = false;
     bool fnB = false;
     bool fnC = false;
+    // uint8_t test = 0;
     for (;;) {
+        if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
+        if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
         PerStat = readOptionKeyEvent;
         frame.setCursor(0, 10);
         frame.print(song_name);
@@ -1137,7 +1145,7 @@ void MainPage() {
             }
         }
 
-        frame.drawRect(0, 87, 160, 9, editMod ? 0xfc51 : 0xa61f);
+        frame.drawRect(0, 87, 160, 9, editMod ? 0xfc51 : 0x529f);
 
         frame.setCursor(116, 29);
         frame.fillRect(115, 28, 21, 25, 0x2104);
@@ -1757,8 +1765,10 @@ void Setting() {
 
 void display_lcd(void *arg) {
     tft.initR(INITR_BLACKTAB);
+    tft.setSPISpeed(79000000);
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
+    frame.setFont(&abcd);
     MainReDraw();
     lcdOK = false;
     MenuPos = 0;
@@ -1768,8 +1778,7 @@ void display_lcd(void *arg) {
     part_point = 0;
     loadOk = true;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
-    // xTaskCreatePinnedToCore(&load, "Load", 2048, NULL, 3, &LOAD, 0);
-    vTaskDelay(32);
+    vTaskDelay(16);
     for (;;) {
         if (MenuPos == 0) {
             MainReDraw();
@@ -2290,16 +2299,16 @@ void comp(void *arg) {
 // COMP TASK END ------------------------------------------------
 FILE *f;
 
-void read_pattern_table() {
+void read_pattern_table(uint8_t head_data[1084]) {
     for (uint8_t i = 0; i < 128; i++) {
        part_table[i] = 0;
     }
     for (uint8_t p = 0; p < 20; p++) {
-        song_name[p] = tracker_data[p];
+        song_name[p] = head_data[p];
     }
-    NUM_PATTERNS = tracker_data[950];
+    NUM_PATTERNS = head_data[950];
     for (uint8_t i = 0; i < NUM_PATTERNS; i++) {
-        part_table[i] = tracker_data[952 + i];
+        part_table[i] = head_data[952 + i];
         printf("%d ", part_table[i]);
     }
     printf("\n");
@@ -2318,9 +2327,9 @@ int find_max(int size) {
     return max;
 }
 
-void read_wave_info() {
+void read_wave_info(uint8_t head_data[1084]) {
     for (uint8_t i = 1; i < 33; i++) {
-        uint8_t* sample_data = (uint8_t*)tracker_data + 20 + (i - 1) * 30;
+        uint8_t* sample_data = (uint8_t*)head_data + 20 + (i - 1) * 30;
         for (uint8_t p = 0; p < 22; p++) {
             samp_name[i][p] = sample_data[p];
         }
@@ -2338,7 +2347,7 @@ void comp_wave_ofst() {
         wav_ofst[i] = 0;
     }
     wav_ofst[1] = 1084 + ((find_max(NUM_PATTERNS)+1) * 1024);
-    printf("FIND MAX %d OFST %ld", find_max(NUM_PATTERNS), wav_ofst[1]);
+    printf("FIND MAX %d OFST %ld\n", find_max(NUM_PATTERNS), wav_ofst[1]);
 /*
     for (uint8_t i = 2; i < 33; i++) {
         printf("%d %d\n", i, wav_ofst[i]);
@@ -2358,15 +2367,15 @@ const char* root_path = "/spiffs";
 void rotate(ESPRotary& rotary) {
     printf("ROTARY %d\n", (int)rotary.getDirection());
     if ((uint8_t)rotary.getDirection() == 255) {
-        //keyUP = true;
+        RtyL = true;
     }
     if ((uint8_t)rotary.getDirection() == 1) {
-        //keyDOWN = true;
+        RtyR = true;
     }
 }
 
 void IRAM_ATTR setKeyOK() {
-    // keyOK = true;
+    RtyB = true;
 }
 
 void refesMpr121(void *arg) {

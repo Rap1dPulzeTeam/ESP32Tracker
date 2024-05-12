@@ -169,8 +169,8 @@ bool enbDelay[4] = {true, true, true, true};
 
 float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
 
-const float patch_table[16] = {3546836.0, 3572537.835745873, 3598425.9175884672, 3624501.595143772, 3650766.227807657, 3677221.184826728, 3703867.8453697185, 3730707.5985993897,
-                         3347767.391694687, 3372026.6942439806, 3396461.7896998064, 3421073.9519300302, 3445864.464033491, 3470834.61840689, 3495985.7168121682, 3521319.0704443706};
+const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.9175884672f, 3624501.595143772f, 3650766.227807657f, 3677221.184826728f, 3703867.8453697185f, 3730707.5985993897f,
+                         3347767.391694687f, 3372026.6942439806f, 3396461.7896998064f, 3421073.9519300302f, 3445864.464033491f, 3470834.61840689f, 3495985.7168121682f, 3521319.0704443706f};
 
 #define hexToDecimalTens(num) (((num) >> 4) & 0x0F)
 #define hexToDecimalOnes(num) ((num) & 0x0F)
@@ -194,48 +194,21 @@ inline int clamp(int value, int min, int max) {
     else
         return value;
 }
-float lmt = 0;
-uint16_t lmtP = 0;
-float comper = 1;
 bool mute[4] = {false, false, false, false};
 
-void limit(float a) {
-    lmt += 2 + (a > 0 ? a : -a) * 15 / 512.0f;
-    lmtP++;
-    comper = lmt / lmtP;
-    if (lmtP >= 4096) {
-        lmt = 0;
-        lmtP = 0;
-    }
-}
+#define DELAY_BUFFER_SIZE 4096
 
-#define DELAY_BUFFER_SIZE 8192
-#define THRESHOLD 1 // Define a threshold to determine when the channel is no longer active
-
-float *delayBuffer[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+float delayBuffer[6][4096];
 int delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
-bool channelActive[6] = {false, false, false, false, false};
-uint8_t sigBase[6] = {100, 100, 100, 100, 100, 100};
 
 void initDelayBuffer() {
-    // Initialization is not needed here anymore
-}
-
-void activateChannel(int chl) {
-    if (!channelActive[chl]) {
-        delayBuffer[chl] = (float *)calloc(DELAY_BUFFER_SIZE, sizeof(float));
-        if (delayBuffer[chl] != NULL) {
-            delayWriteIndex[chl] = 0;
-            channelActive[chl] = true;
-        }
-    }
-}
-
-void deactivateChannel(int chl) {
-    if (channelActive[chl]) {
-        free(delayBuffer[chl]);
-        delayBuffer[chl] = NULL;
-        channelActive[chl] = false;
+    for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
+        delayBuffer[0][i] = 0.0f;
+        delayBuffer[1][i] = 0.0f;
+        delayBuffer[2][i] = 0.0f;
+        delayBuffer[3][i] = 0.0f;
+        delayBuffer[4][i] = 0.0f;
+        delayBuffer[5][i] = 0.0f;
     }
 }
 
@@ -244,29 +217,15 @@ float audioDelay(float inputSample, int delayLength, float decayRate, float dryM
         delayLength = DELAY_BUFFER_SIZE - 1;
     }
 
-    if (vol[chl]) {
-        activateChannel(chl);
+    int readIndex = delayWriteIndex[chl] - delayLength;
+    if (readIndex < 0) {
+        readIndex += DELAY_BUFFER_SIZE;
     }
 
-    if (channelActive[chl]) {
-        int readIndex = delayWriteIndex[chl] - delayLength;
-        if (readIndex < 0) {
-            readIndex += DELAY_BUFFER_SIZE;
-        }
-
-        float outputSample = delayBuffer[chl][readIndex];
-        delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
-        sigBase[chl] *= decayRate;
-        delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
-
-        if (sigBase[chl] <= THRESHOLD) {
-            deactivateChannel(chl);
-        }
-
-        return dryMix * inputSample + wetMix * outputSample;
-    } else {
-        return dryMix * inputSample; // If the channel is not active, return dry mix only
-    }
+    float outputSample = delayBuffer[chl][readIndex];
+    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
+    delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
+    return dryMix * inputSample + wetMix * outputSample;
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
@@ -358,19 +317,46 @@ void comp(void *arg);
 void load(void *arg);
 // **************************INIT*END****************************
 
-char ten[24];
 int16_t period[4] = {0, 0, 0, 0};
 float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
-float global_vol = 0.2f;
+float global_vol = 1.0f;
 
 int16_t temp;
 uint16_t wave_info[33][5];
 uint32_t wav_ofst[34];
 
 bool master_delay = false;
+bool master_limit = true;
+float stroMix = 0;
+
+// Limit
+typedef struct {
+    int16_t threshold;
+    int16_t soft_knee;
+} Limiter;
+
+void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
+    limiter->threshold = threshold;
+    limiter->soft_knee = soft_knee;
+}
+
+static inline int16_t audioLimit(Limiter *limiter, int16_t inputSample) {
+    int16_t absInputSample = inputSample > 0 ? inputSample : -inputSample;
+
+    if (absInputSample > limiter->threshold) {
+        float normalizedExcess = (float)(absInputSample - limiter->threshold) / limiter->soft_knee;
+        float compressedExcess = tanhf(normalizedExcess) * limiter->soft_knee;
+        int16_t compressedSample = limiter->threshold + (int16_t)compressedExcess;
+        return inputSample > 0 ? compressedSample : -compressedSample;
+    } else {
+        return inputSample;
+    }
+}
+
+Limiter limiter;
 
 int8_t audio_master_write(const void *src, size_t size, size_t len) {
     for (uint16_t i = 0; i < len; i++) {
@@ -380,13 +366,35 @@ int8_t audio_master_write(const void *src, size_t size, size_t len) {
         } else {
             return -1;
         }
+        if (master_limit) {
+            buffer16BitStro[i].dataL = audioLimit(&limiter, buffer16BitStro[i].dataL);
+            buffer16BitStro[i].dataR = audioLimit(&limiter, buffer16BitStro[i].dataR);
+        }
+        if (master_delay) {
+            buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, 4096, 0.4f, 0.8f, 0.2f, 4);
+            buffer16BitStro[i].dataR = audioDelay(buffer16BitStro[i].dataR, 4096, 0.4f, 0.8f, 0.2f, 5);
+        }
+        int16_t inputL = buffer16BitStro[i].dataL;
+        int16_t inputR = buffer16BitStro[i].dataR;
+        buffer16BitStro[i].dataL = (int16_t)((1.0f - stroMix) * inputL + stroMix * inputR);
+        buffer16BitStro[i].dataR = (int16_t)((1.0f - stroMix) * inputR + stroMix * inputL);
+        wave_MAX_L += abs(buffer16BitStro[i].dataL);
+        wave_MAX_R += abs(buffer16BitStro[i].dataR);
     }
+    wave_MAX_L_OUT = wave_MAX_L / 2560;
+    wave_MAX_L = 0;
+    wave_MAX_R_OUT = wave_MAX_R / 2560;
+    wave_MAX_R = 0;
+    MAX_COMP_FINISH = true;
     i2s_write(I2S_NUM_0, src, len*size, &wrin, portMAX_DELAY);
+    printf("L=%5d R=%5d\n", wave_MAX_L_OUT, wave_MAX_R_OUT);
     return 0;
 }
 
 // OSC START -----------------------------------------------------
 void display(void *arg) {
+    char ten[24];
+    char one[24];
     SSD1306_t dev;
     i2c_master_init(&dev, 1, 2, -1);
     ssd1306_init(&dev, 128, 64);
@@ -422,14 +430,16 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
-                // sprintf(ten, " %d", esp_get_free_heap_size());
-                sprintf(ten, "%d %d %d %d %d %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
+                sprintf(ten, " %d", esp_get_free_heap_size());
+                // sprintf(ten, "%d   %d   %d   %d   %d   %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
+                // sprintf(one, "%3d %3d %3d %3d %3d %3d\n", sigBase[0], sigBase[1], sigBase[2], sigBase[3], sigBase[4], sigBase[5]);
                 addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
                 addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
                 addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
                 addr[3] = data_index[3] * (32.0f / wave_info[smp_num[3]][0]);
                 ssd1306_display_text(&dev, 0, (char *)"CH1 CH2 CH3 CH4", 16, false);
                 ssd1306_display_text(&dev, 6, ten, 16, false);
+                ssd1306_display_text(&dev, 5, one, 16, false);
                 if (!mute[0]) {
                 for (x = 0; x < 32; x++) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
@@ -548,7 +558,8 @@ int8_t lastVol[4];
 float sin_index;
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
     if (vole == 0 || freq <= 0 || mute[chl]) {
-        return 0;
+        if (enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
+        else return 0;
     }
 
     data_index[chl] += freq / SMP_RATE;
@@ -1556,19 +1567,19 @@ void wav_player() {
             frame.display();
         }
         for (uint16_t s = 0; s < 2560; s++) {
-            wave_MAX_L += abs(buffer16BitStro[s].dataL);
-            wave_MAX_R += abs(buffer16BitStro[s].dataR);
             buffer16BitStro[s].dataL *= i2s_vol;
             buffer16BitStro[s].dataR *= i2s_vol;
         }
+        /*
         wave_MAX_L_OUT = wave_MAX_L / 2560;
         wave_MAX_L = 0;
         wave_MAX_R_OUT = wave_MAX_R / 2560;
         wave_MAX_R = 0;
         MAX_COMP_FINISH = true;
+        */
         // i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
         if (audio_master_write(buffer, sizeof(audio16BitStro), 2560) != 0) exit(-1);
-        printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
+        // printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             switch (optionKeyEvent.num)
             {
@@ -2524,6 +2535,7 @@ void input(void *arg) {
 
 void setup()
 {
+    initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     // initDelayBuffer();

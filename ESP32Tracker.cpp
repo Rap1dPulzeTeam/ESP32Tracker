@@ -41,16 +41,16 @@
 #define TFT_CS 10
 #define TFT_RST 8
 uint8_t tracker_data_header[1084];
-uint8_t **tracker_data_pattern;
-uint8_t *tracker_data_sample[32];
+uint8_t **tracker_data_pattern = NULL;
+int8_t *tracker_data_sample[33];
 uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
 void fillMidRect(uint8_t w, uint8_t h, uint16_t color);
 void drawMidRect(uint8_t w, uint8_t h, uint16_t color);
 void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
-void read_pattern_table();
-void read_wave_info();
-void comp_wave_ofst();
+void read_pattern_table(uint8_t head_data[1084]);
+void read_wave_info(uint8_t head_data[1084]);
+// void comp_wave_ofst();
 #define CHL_NUM 4
 #define TRACKER_ROW 64
 uint8_t NUM_PATTERNS;
@@ -184,6 +184,23 @@ inline int clamp(int value, int min, int max) {
     else
         return value;
 }
+
+int find_max(int size) {
+    if (size <= 0) {
+        return -1;
+    }
+    int max = part_table[0];
+    for (int i = 1; i < size; i++) {
+        if (part_table[i] > max) {
+            max = part_table[i];
+        }
+    }
+    return max;
+}
+
+uint16_t wave_info[33][5];
+uint32_t wav_ofst[34];
+
 bool mute[4] = {false, false, false, false};
 
 #define DELAY_BUFFER_SIZE 4096
@@ -261,63 +278,135 @@ uint8_t* read_file(const char* path, long* file_size) {
     return buffer;
 }
 
-long read_tracker_file(const char* path) {
+int8_t read_tracker_file(const char* path) {
+    static uint8_t pat_max = 0;
+    // Free previously allocated memory for patterns
+    for (uint8_t i = 0; i < pat_max; i++) {
+        if (tracker_data_pattern && tracker_data_pattern[i]) {
+            printf("FREE PAT #%d ADRS %p\n", i, tracker_data_pattern[i]);
+            free(tracker_data_pattern[i]);
+            tracker_data_pattern[i] = NULL;
+        }
+    }
+    if (tracker_data_pattern) {
+        printf("PAT ADRS %p\n", tracker_data_pattern);
+        free(tracker_data_pattern);
+        tracker_data_pattern = NULL;
+    }
+
+    // Free previously allocated memory for samples
+    for (uint8_t i = 0; i < 33; i++) {
+        if (tracker_data_sample[i]) {
+            printf("FREE SMP #%d ADRS %p\n", i, tracker_data_sample[i]);
+            free(tracker_data_sample[i]);
+            tracker_data_sample[i] = NULL;
+        }
+    }
+
     printf("NOW READ FILE %s\n", path);
     FILE *file = fopen(path, "rb");
-    long file_size;
-    /*
-    if (tracker_data != NULL) {
-        free(tracker_data);
-        printf("FREE MEM\n");
-        tracker_data = NULL;
+    if (!file) {
+        printf("Failed to open file %s\n", path);
+        return -1;
     }
-    */
-    // tracker_data = read_file(path, &file_size);
+
     size_t readRelly = fread(tracker_data_header, 1, 1084, file);
     printf("READ HEADER FINISH\n");
-    if (readRelly < 1084) {//(tracker_data == NULL) || (file_size == 0)) {
-        printf("READ %s ERROR! MALLOC FAILED! FILE SIZE IS %ld\n", path, readRelly);
-        return 0;
-    } else {
-        if ((tracker_data_header[1080] != 0x4D) ||
-            (tracker_data_header[1081] != 0x2E) ||
-            (tracker_data_header[1082] != 0x4B) ||
-            (tracker_data_header[1083] != 0x2E)) {
-            printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, tracker_data_header[1080],
-                tracker_data_header[1081],
-                    tracker_data_header[1082],
-                        tracker_data_header[1083]);
-            return -1;
-        }
-        read_pattern_table(tracker_data_header);
-        read_wave_info(tracker_data_header);
-        uint8_t pat_max = find_max(NUM_PATTERNS)+1;
-        tracker_data_pattern = (uint8_t**)malloc(pat_max);
-        for (uint8_t i = 0; i < pat_max; i++) {
-            tracker_data_pattern[i] = (uint8_t*)malloc(1024);
-            if (tracker_data_pattern[i] == NULL) {printf("READ PATTERN MALLOC FAIL! EXITNG...\n"); exit(-1);}
-            fread(tracker_data_pattern[i], 1, 1024, file);
-        }
-        for (uint8_t i = 0; i < 32; i++) {
-            if (wave_info[i+1][0]) fread(tracker_data_sample[i], 1, wave_info[i+1][0], file);
-        }
-        printf("READ %s FINISH! FILE SIZE IS %ld\n", path, file_size);
+    if (readRelly < 1084) {
+        printf("READ %s ERROR! FILE TOO SMALL! FILE SIZE IS %zu\n", path, readRelly);
+        fclose(file);
+        return -1;
     }
-    return file_size;
+
+    if ((tracker_data_header[1080] != 0x4D) ||
+        (tracker_data_header[1081] != 0x2E) ||
+        (tracker_data_header[1082] != 0x4B) ||
+        (tracker_data_header[1083] != 0x2E)) {
+        printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, 
+            tracker_data_header[1080], tracker_data_header[1081], 
+            tracker_data_header[1082], tracker_data_header[1083]);
+        fclose(file);
+        return -1;
+    }
+
+    read_pattern_table(tracker_data_header);
+    read_wave_info(tracker_data_header);
+    pat_max = find_max(NUM_PATTERNS) + 1;
+    tracker_data_pattern = (uint8_t**)malloc(pat_max * sizeof(uint8_t*));
+    if (!tracker_data_pattern) {
+        printf("UNKNOWN MALLOC FAIL...\n");
+        fclose(file);
+        return -2;
+    }
+
+    printf("HEAD NOW FILE POS %ld\n", ftell(file));
+    for (uint8_t i = 0; i < pat_max; i++) {
+        tracker_data_pattern[i] = (uint8_t*)malloc(1024);
+        if (!tracker_data_pattern[i]) {
+            printf("READ PATTERN MALLOC FAIL! EXITING...\n");
+            for (uint8_t j = 0; j < i; j++) {
+                free(tracker_data_pattern[j]);
+            }
+            free(tracker_data_pattern);
+            fclose(file);
+            return -2;
+        }
+        fread(tracker_data_pattern[i], 1, 1024, file);
+    }
+
+    printf("PAT NOW FILE POS %ld\n", ftell(file));
+    for (uint8_t i = 0; i < 32; i++) {
+        if (wave_info[i + 1][0]) {
+            tracker_data_sample[i + 1] = (int8_t*)malloc(wave_info[i + 1][0]);
+            if (!tracker_data_sample[i + 1]) {
+                printf("READ SAMPLE MALLOC FAIL! EXITING...\n");
+                for (uint8_t j = 0; j < pat_max; j++) {
+                    free(tracker_data_pattern[j]);
+                }
+                free(tracker_data_pattern);
+                for (uint8_t j = 0; j <= i; j++) {
+                    free(tracker_data_sample[j + 1]);
+                }
+                fclose(file);
+                return -2;
+            }
+            fread(tracker_data_sample[i + 1], 1, wave_info[i + 1][0], file);
+            printf("READ SMP #%d SIZE: %d STATUS %p\n", i + 1, wave_info[i + 1][0], tracker_data_sample[i + 1]);
+        }
+    }
+
+    printf("FINISH NOW FILE POS %ld\n", ftell(file));
+    printf("READ %s FINISH!\n", path);
+    fclose(file);
+    return 0;
 }
 
 bool new_tracker_file() {
-    tracker_data = (uint8_t *)realloc(tracker_data, 2108);
-    if (tracker_data == NULL) {
+    if (tracker_data_header == NULL) {
         printf("CREATE NEW FILE ON MEM FAILED!\n");
         return 1;
     }
-    for (uint16_t p = 0; p < 2108; p++) {
-        tracker_data[p] = tracker_null[p];
+    for (uint16_t p = 0; p < 1084; p++) {
+        tracker_data_header[p] = tracker_null[p];
+    }
+    read_pattern_table(tracker_data_header);
+    read_wave_info(tracker_data_header);
+    uint8_t pat_max = find_max(NUM_PATTERNS)+1;
+    tracker_data_pattern = (uint8_t**)malloc(pat_max*sizeof(uint8_t*));
+    for (uint8_t i = 0; i < pat_max; i++) {
+        tracker_data_pattern[i] = (uint8_t*)malloc(1024);
+        if (tracker_data_pattern[i] == NULL) {printf("READ PATTERN MALLOC FAIL! EXITNG...\n"); exit(-1);}
+        for (uint16_t j = 0; j < 1024; j++) {
+            tracker_data_pattern[i][j] = 0;
+        }
+    }
+    for (uint8_t i = 0; i < 32; i++) {
+        //if (wave_info[i][0]) fread(tracker_data_sample[i], 1, wave_info[i+1][0], file);
     }
     printf("CREATE NEW FILE ON MEM FINISH!\n");
     return 0;
 }
+
 void comp(void *arg);
 void load(void *arg);
 // **************************INIT*END****************************
@@ -327,15 +416,13 @@ float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
-float global_vol = 1.0f;
+float global_vol = 0.5f;
 
 int16_t temp;
-uint16_t wave_info[33][5];
-uint32_t wav_ofst[34];
 
 bool master_delay = false;
 bool master_limit = true;
-float stroMix = 0;
+float stroMix = 0.45f;
 
 // Limit
 typedef struct {
@@ -513,8 +600,8 @@ void display(void *arg) {
 }
 // OSC END -------------------------------------------------------
 
-inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]) {
-    uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
+inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]) {
+    uint8_t* pattern_data = tracker_data[pattern_index];
 
     uint16_t byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
     // Byte structure for tracker data:
@@ -545,8 +632,8 @@ inline void read_part_data(uint8_t* tracker_data, uint8_t pattern_index, uint8_t
     part_data[3] = byte4;
 }
 
-void write_part_data(uint8_t *tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint16_t row_data[4]) {
-    uint8_t* pattern_data = tracker_data + 1084 + pattern_index * NUM_ROWS * NUM_CHANNELS * 4;
+void write_part_data(uint8_t **tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint16_t row_data[4]) {
+    uint8_t* pattern_data = tracker_data[pattern_index];
 
     uint16_t byte_index = row * NUM_CHANNELS * 4 + chl * 4;
 
@@ -561,22 +648,25 @@ uint8_t arpNote[2][4] = {0};
 float arpFreq[3][4];
 int8_t lastVol[4];
 float sin_index;
-inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint32_t smp_start, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
-    if (vole == 0 || freq <= 0 || mute[chl]) {
+inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
+    if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
         if (enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
         else return 0;
     }
 
     data_index[chl] += freq / SMP_RATE;
 
-    if (isLoop && data_index[chl] >= (loopStart + loopLen)) {
-        data_index[chl] = loopStart;
-    } else if (!isLoop && data_index[chl] >= smp_size) {
+    if (isLoop) {
+        while (data_index[chl] >= (loopStart + loopLen)) {
+            data_index[chl] -= loopLen;
+        }
+    } else if (data_index[chl] >= smp_size) {
         vol[chl] = 0;
         return 0;
     }
 
-    int16_t sample1 = ((int8_t)tracker_data[(int)data_index[chl] + smp_start] * (vole << 1));
+    int idx = (int)data_index[chl];
+    int16_t sample1 = (tracker_data_sample[smp_num][idx] * (vole << 1));
     float result;
 
     if ((isline && isCos) || (isline && isCubic) || (isCos && isCubic)) {
@@ -585,26 +675,43 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
         isCos = false;
     }
 
-    if (isline && (int)data_index[chl] < smp_size - 1) {
-        int16_t sample2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
-        float frac = data_index[chl] - (int)data_index[chl];
+    if (isline) {
+        int nextIdx = idx + 1;
+        if (nextIdx >= smp_size) {
+            nextIdx = isLoop ? loopStart : 0;
+        }
+        int16_t sample2 = (tracker_data_sample[smp_num][nextIdx] * (vole << 1));
+        float frac = data_index[chl] - idx;
         result = (1.0f - frac) * sample1 + frac * sample2;
-    }
-    else if (isCos && (int)data_index[chl] < smp_size - 1) {
-        int16_t sample2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
-        float frac = data_index[chl] - (int)data_index[chl];
+    } else if (isCos) {
+        int nextIdx = idx + 1;
+        if (nextIdx >= smp_size) {
+            nextIdx = isLoop ? loopStart : 0;
+        }
+        int16_t sample2 = (tracker_data_sample[smp_num][nextIdx] * (vole << 1));
+        float frac = data_index[chl] - idx;
         float f_t = (1 - cosf(M_PI * frac)) / 2;
         result = (1.0f - f_t) * sample1 + f_t * sample2;
-    }
-    else if (isCubic && (int)data_index[chl] < smp_size - 2) {
-        int16_t y0 = ((int8_t)tracker_data[(int)data_index[chl] - 1 + smp_start] * (vole << 1));
+    } else if (isCubic) {
+        int prevIdx = idx - 1;
+        int nextIdx1 = idx + 1;
+        int nextIdx2 = idx + 2;
+        if (prevIdx < 0) {
+            prevIdx = isLoop ? loopStart + loopLen - 1 : 0;
+        }
+        if (nextIdx1 >= smp_size) {
+            nextIdx1 = isLoop ? loopStart : 0;
+        }
+        if (nextIdx2 >= smp_size) {
+            nextIdx2 = isLoop ? loopStart + (nextIdx2 - smp_size) : 0;
+        }
+        int16_t y0 = (tracker_data_sample[smp_num][prevIdx] * (vole << 1));
         int16_t y1 = sample1;
-        int16_t y2 = ((int8_t)tracker_data[(int)data_index[chl] + 1 + smp_start] * (vole << 1));
-        int16_t y3 = ((int8_t)tracker_data[(int)data_index[chl] + 2 + smp_start] * (vole << 1));
-        float frac = data_index[chl] - (int)data_index[chl];
+        int16_t y2 = (tracker_data_sample[smp_num][nextIdx1] * (vole << 1));
+        int16_t y3 = (tracker_data_sample[smp_num][nextIdx2] * (vole << 1));
+        float frac = data_index[chl] - idx;
         result = y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0)));
-    }
-    else {
+    } else {
         result = sample1;
     }
 
@@ -617,6 +724,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
 
     return result;
 }
+
 // AUDIO DATA COMP END ------------------------------------------
 
 // float frq[CHL_NUM] = {0};
@@ -682,7 +790,7 @@ const char* findNote(int frequency) {
     }
     return "???";
 }
-const char* fileSelect(const char* root_path) {
+char* fileSelect(const char* root_path) {
     playStat = false;
     char path[256];
     uint8_t path_depth = 0;
@@ -846,7 +954,9 @@ inline void MainReDraw() {
 inline void fileOpt() {
     key_event_t optionKeyEvent;
     for (;;) {
-        long ret = read_tracker_file(fileSelect("/sdcard"));
+        char *fileName = fileSelect("/sdcard");
+        int8_t ret = read_tracker_file(fileName);
+        free(fileName);
         if (ret == -1) {
             fillMidRect(148, 20, 0x4208);
             drawMidRect(148, 20, ST7735_WHITE);
@@ -861,7 +971,7 @@ inline void fileOpt() {
                 vTaskDelay(4);
             }
             MainReDraw();
-        } else if (ret == 0) {
+        } else if (ret == -2) {
             fillMidRect(148, 20, 0x4208);
             drawMidRect(148, 20, ST7735_WHITE);
             setMidCusr(148, 20, 7);
@@ -889,9 +999,8 @@ void loadFileInit() {
     period[0] = period[1] = period[2] = period[3] = 0;
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
     fileOpt();
-    read_pattern_table();
-    read_wave_info();
-    comp_wave_ofst();
+    read_pattern_table(tracker_data_header);
+    read_wave_info(tracker_data_header);
     windowsClose = true;
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -910,9 +1019,8 @@ void newFileInit() {
     period[0] = period[1] = period[2] = period[3] = 0;
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
     new_tracker_file();
-    read_pattern_table();
-    read_wave_info();
-    comp_wave_ofst();
+    read_pattern_table(tracker_data_header);
+    read_wave_info(tracker_data_header);
     windowsClose = true;
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -1052,10 +1160,10 @@ void MainPage() {
         if (!ChlMenuPos && !sideMenu) {
             if (readTouchPadKeyEvent == pdTRUE) if (editMod && touchPadEvent.status == KEY_ATTACK) {
                 uint16_t tmpData[4];
-                read_part_data(tracker_data, part_table[part_point], ChlPos-1, row_point, tmpData);
+                read_part_data(tracker_data_pattern, part_table[part_point], ChlPos-1, row_point, tmpData);
                 tmpData[0] = midi_period_table[inputOct][touchPadEvent.num];
                 tmpData[1] = smp_num[ChlPos-1];
-                write_part_data(tracker_data, part_table[part_point], ChlPos-1, row_point, tmpData);
+                write_part_data(tracker_data_pattern, part_table[part_point], ChlPos-1, row_point, tmpData);
             }
             if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
                 PerStat = pdFALSE;
@@ -1173,7 +1281,7 @@ void MainPage() {
                 frame.setTextColor(0xf7be);
                 frame.printf("%2d", row_point+i);
                 for (uint8_t chl = 0; chl < 4; chl++) {
-                    read_part_data(tracker_data, part_table[part_point], row_point+i, chl, viewTmp);
+                    read_part_data(tracker_data_pattern, part_table[part_point], row_point+i, chl, viewTmp);
                     showTmpNote = viewTmp[0];
                     showTmpSamp = viewTmp[1];
 
@@ -1199,7 +1307,7 @@ void MainPage() {
                 frame.printf("\n");
             }
         }
-        read_part_data(tracker_data, part_table[part_point], row_point, ChlPos-1, viewTmp);
+        read_part_data(tracker_data_pattern, part_table[part_point], row_point, ChlPos-1, viewTmp);
         frame.setTextColor(ST7735_WHITE);
 
         frame.fillRect(0, 19, 112, 21, 0x3186);
@@ -1438,7 +1546,7 @@ void ChlEdit() {
             if ((row_point+i < 64) && (row_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
                 frame.printf("%2d", row_point+i);
-                read_part_data(tracker_data, part_table[part_point], row_point+i, ChlPos-1, viewTmp);
+                read_part_data(tracker_data_pattern, part_table[part_point], row_point+i, ChlPos-1, viewTmp);
                 
                 showTmpNote = viewTmp[0];
                 showTmpSamp = viewTmp[1];
@@ -1543,8 +1651,9 @@ void wav_player() {
     buffer = realloc(buffer, 10240);
     buffer16BitStro = (audio16BitStro*)buffer;
     memset(buffer, 0, BUFF_SIZE * sizeof(int16_t));
-    const char *wave_file_name = fileSelect("/sdcard");
+    char *wave_file_name = fileSelect("/sdcard");
     wave_file = fopen(wave_file_name, "rb");
+    free(wave_file_name);
     WavHeader_t header;
     parseWavHeader(wave_file, &header);
     printf("WAV File Information:\n");
@@ -1772,9 +1881,8 @@ void display_lcd(void *arg) {
     MainReDraw();
     lcdOK = false;
     MenuPos = 0;
-    read_pattern_table();
-    read_wave_info();
-    comp_wave_ofst();
+    read_pattern_table(tracker_data_header);
+    read_wave_info(tracker_data_header);
     part_point = 0;
     loadOk = true;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
@@ -1868,9 +1976,9 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (wave_info[smp_num[chl]][4] > 2) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, smp_num[chl], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, wav_ofst[smp_num[chl]], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
                     }
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
@@ -1948,7 +2056,7 @@ void comp(void *arg) {
                     } else if (tick_time == tick_speed) {
                         tick_time = 0;
                         for (chl = 0; chl < 4; chl++) {
-                            read_part_data(tracker_data, part_table[part_point], row_point, chl, part_buffer);
+                            read_part_data(tracker_data_pattern, part_table[part_point], row_point, chl, part_buffer);
                             if (part_buffer[2] == 13) {
                                 if (part_buffer[3]) {
                                     skipToRow = hexToRow(part_buffer[3]);
@@ -2314,19 +2422,6 @@ void read_pattern_table(uint8_t head_data[1084]) {
     printf("\n");
 }
 
-int find_max(int size) {
-    if (size <= 0) {
-        return -1;
-    }
-    int max = part_table[0];
-    for (int i = 1; i < size; i++) {
-        if (part_table[i] > max) {
-            max = part_table[i];
-        }
-    }
-    return max;
-}
-
 void read_wave_info(uint8_t head_data[1084]) {
     for (uint8_t i = 1; i < 33; i++) {
         uint8_t* sample_data = (uint8_t*)head_data + 20 + (i - 1) * 30;
@@ -2339,25 +2434,6 @@ void read_wave_info(uint8_t head_data[1084]) {
         wave_info[i][3] = (sample_data[26] << 8) | sample_data[27];  // 重复点
         wave_info[i][4] = (sample_data[28] << 8) | sample_data[29];  // 重复长度
         // ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3], wave_info[i][4], find_max(NUM_PATTERNS)+1);
-    }
-}
-
-void comp_wave_ofst() {
-    for (uint8_t i = 0; i < 34; i++) {
-        wav_ofst[i] = 0;
-    }
-    wav_ofst[1] = 1084 + ((find_max(NUM_PATTERNS)+1) * 1024);
-    printf("FIND MAX %d OFST %ld\n", find_max(NUM_PATTERNS), wav_ofst[1]);
-/*
-    for (uint8_t i = 2; i < 33; i++) {
-        printf("%d %d\n", i, wav_ofst[i]);
-        wav_ofst[i] += wave_info[i][0];
-        wav_ofst[i+1] = wav_ofst[i];
-    }
-*/
-    for (uint8_t i = 1; i < 33; i++) {
-        // printf("1 %ld %ld %d\n", wav_ofst[i+1], wav_ofst[i], wave_info[i+1][0]);
-        wav_ofst[i+1] += (wav_ofst[i] + wave_info[i][0]);
     }
 }
 
@@ -2394,7 +2470,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
+                    // printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
                 }
             }
             if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
@@ -2403,7 +2479,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
+                    // printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
                 }
             }
         }

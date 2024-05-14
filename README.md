@@ -1,7 +1,7 @@
 # ESP32Tracker
 
 ---
-![1000045304](https://github.com/Rap1dPulzeTeam/ESP32Tracker/assets/86410439/018bce3e-c3c8-4af2-8a8f-344749265a94)
+![1000053426](https://github.com/Rap1dPulzeTeam/ESP32Tracker/assets/86410439/59e0d961-2ec9-4345-bcf4-6c4aa127cd60)
 
 ESP32Tracker is a Tracker-style sound creation tool based on ESP32S3 N16R8. You can use the built-in sampler and track editor to manipulate samples or perform other processing. This project is under development!  
 

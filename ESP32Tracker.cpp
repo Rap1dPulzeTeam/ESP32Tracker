@@ -73,6 +73,7 @@ ESPRotary rotary;
 bool RtyL = false;
 bool RtyR = false;
 bool RtyB = false;
+static uint8_t pat_max = 0;
 
 typedef enum {
     KEY_IDLE,
@@ -137,7 +138,7 @@ int8_t vol[CHL_NUM] = {0, 0, 0, 0};
 
 size_t wrin;
 uint8_t stp;
-bool display_stat = true;
+static bool display_stat = true;
 
 uint8_t part_table[128];
 int8_t part_point = 0;
@@ -248,38 +249,7 @@ float lowPassFilterSingleSample(float sample, int chl, float cutoffFreqIn, uint1
     return lastOutputs[chl] = alpha * sample + (1 - alpha) * lastOutputs[chl];
 }
 
-uint8_t* read_file(const char* path, long* file_size) {
-    FILE* file = fopen(path, "rb");
-    if (!file) {
-        printf("Failed to open file for reading\n");
-        return NULL;
-    }
-
-    fseek(file, 0, SEEK_END);
-    *file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    uint8_t* buffer = (uint8_t*)realloc(buffer, *file_size);
-    if (!buffer) {
-        printf("Failed to allocate memory\n");
-        fclose(file);
-        return NULL;
-    }
-
-    size_t bytes_read = fread(buffer, 1, *file_size, file);
-    if (bytes_read != *file_size) {
-        printf("Failed to read file\n");
-        fclose(file);
-        free(buffer);
-        return NULL;
-    }
-
-    fclose(file);
-    return buffer;
-}
-
 int8_t read_tracker_file(const char* path) {
-    static uint8_t pat_max = 0;
     // Free previously allocated memory for patterns
     for (uint8_t i = 0; i < pat_max; i++) {
         if (tracker_data_pattern && tracker_data_pattern[i]) {
@@ -382,6 +352,29 @@ int8_t read_tracker_file(const char* path) {
 }
 
 bool new_tracker_file() {
+
+    for (uint8_t i = 0; i < pat_max; i++) {
+        if (tracker_data_pattern && tracker_data_pattern[i]) {
+            printf("FREE PAT #%d ADRS %p\n", i, tracker_data_pattern[i]);
+            free(tracker_data_pattern[i]);
+            tracker_data_pattern[i] = NULL;
+        }
+    }
+    if (tracker_data_pattern) {
+        printf("PAT ADRS %p\n", tracker_data_pattern);
+        free(tracker_data_pattern);
+        tracker_data_pattern = NULL;
+    }
+
+    // Free previously allocated memory for samples
+    for (uint8_t i = 0; i < 33; i++) {
+        if (tracker_data_sample[i]) {
+            printf("FREE SMP #%d ADRS %p\n", i, tracker_data_sample[i]);
+            free(tracker_data_sample[i]);
+            tracker_data_sample[i] = NULL;
+        }
+    }
+
     if (tracker_data_header == NULL) {
         printf("CREATE NEW FILE ON MEM FAILED!\n");
         return 1;
@@ -391,7 +384,7 @@ bool new_tracker_file() {
     }
     read_pattern_table(tracker_data_header);
     read_wave_info(tracker_data_header);
-    uint8_t pat_max = find_max(NUM_PATTERNS)+1;
+    pat_max = find_max(NUM_PATTERNS)+1;
     tracker_data_pattern = (uint8_t**)malloc(pat_max*sizeof(uint8_t*));
     for (uint8_t i = 0; i < pat_max; i++) {
         tracker_data_pattern[i] = (uint8_t*)malloc(1024);
@@ -492,7 +485,7 @@ void display(void *arg) {
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
-    ssd1306_display_text(&dev, 2, (char *)"LOADING....", 14, false);
+    ssd1306_display_text(&dev, 2, (char *)"WAITING....", 12, false);
     vTaskDelay(2);
     for (;;) {
         vTaskDelay(2);
@@ -522,16 +515,17 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
-                sprintf(ten, " %d", esp_get_free_heap_size());
+                sprintf(ten, " %2d %2d>%2d %.2f", row_point, part_point, part_table[part_point], stroMix);
                 // sprintf(ten, "%d   %d   %d   %d   %d   %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
                 // sprintf(one, "%3d %3d %3d %3d %3d %3d\n", sigBase[0], sigBase[1], sigBase[2], sigBase[3], sigBase[4], sigBase[5]);
-                addr[0] = data_index[0] * (32.0f / wave_info[smp_num[0]][0]);
-                addr[1] = data_index[1] * (32.0f / wave_info[smp_num[1]][0]);
-                addr[2] = data_index[2] * (32.0f / wave_info[smp_num[2]][0]);
-                addr[3] = data_index[3] * (32.0f / wave_info[smp_num[3]][0]);
+                addr[0] = (uint8_t)(data_index[0] * (32.0f / wave_info[smp_num[0]][0])) & 31;
+                addr[1] = (uint8_t)(data_index[1] * (32.0f / wave_info[smp_num[1]][0])) & 31;
+                addr[2] = (uint8_t)(data_index[2] * (32.0f / wave_info[smp_num[2]][0])) & 31;
+                addr[3] = (uint8_t)(data_index[3] * (32.0f / wave_info[smp_num[3]][0])) & 31;
+                // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
                 ssd1306_display_text(&dev, 0, (char *)"CH1 CH2 CH3 CH4", 16, false);
                 ssd1306_display_text(&dev, 6, ten, 16, false);
-                ssd1306_display_text(&dev, 5, one, 16, false);
+                // ssd1306_display_text(&dev, 5, one, 16, false);
                 if (!mute[0]) {
                 for (x = 0; x < 32; x++) {
                     _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
@@ -1812,7 +1806,7 @@ void SampEdit() {
     key_event_t optionKeyEvent;
     for (;;) {
         frame.setCursor(0, 10);
-        frame.printf("This is Sample Editer");
+        frame.printf("Sample Editer");
         frame.display();
         vTaskDelay(64);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
@@ -1895,11 +1889,6 @@ void Setting() {
 }
 
 void display_lcd(void *arg) {
-    tft.initR(INITR_BLACKTAB);
-    tft.setSPISpeed(79000000);
-    tft.setRotation(3);
-    tft.fillScreen(ST7735_BLACK);
-    frame.setFont(&abcd);
     MainReDraw();
     lcdOK = false;
     MenuPos = 0;
@@ -2487,6 +2476,7 @@ void refesMpr121(void *arg) {
     Wire1.begin(15, 16);
     touchPad.begin(0x5B, &Wire1);
     key_event_t touchPadEvent;
+    printf("MPR121 READY!\n");
     for (;;) {
         currtouched = touchPad.touched();
         for (uint8_t i=0; i<12; i++) {
@@ -2497,7 +2487,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    // printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
                 }
             }
             if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
@@ -2506,7 +2496,7 @@ void refesMpr121(void *arg) {
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
                 } else {
-                    // printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
+                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
                 }
             }
         }
@@ -2647,12 +2637,16 @@ void input(void *arg) {
 
 void setup()
 {
+    tft.initR(INITR_BLACKTAB);
+    tft.setSPISpeed(79000000);
+    tft.setRotation(3);
+    tft.fillScreen(ST7735_BLACK);
+    frame.setFont(&abcd);
     initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     // initDelayBuffer();
     esp_err_t ret;
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "ffat",
@@ -2673,15 +2667,41 @@ void setup()
     slot_config.clk = GPIO_NUM_48;
     slot_config.cmd = GPIO_NUM_47;
     slot_config.d0 = GPIO_NUM_45;
+    key_event_t optionKeyEvent;
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
-    if (ret == ESP_OK) {
-        printf("SDCARD mounted\n");
-        sdmmc_card_print_info(stdout, card);
-    } else {
-        printf("SDCARD NOT EXIST OR ERROR! SKIP MOUNT!\n");
+    while (ret != ESP_OK) {
+        MainReDraw();
+        fillMidRect(151, 34, 0x4208);
+        drawMidRect(151, 34, ST7735_WHITE);
+        setMidCusr(151, 34, 4);
+        frame.setTextColor(0x7bcf);
+        uint8_t X=frame.getCursorX();
+        frame.printf("SDCARD STATUS ERROR %x:\n", ret);
+        frame.setCursor(X, frame.getCursorY()+2);
+        frame.println((ret == 263) ? "SDCARD NOT FOUND" : ((ret == -1) ? "UNKNOW FILE SYSTEM" : "UNKNOW ERROR"));
+        frame.setCursor(X, frame.getCursorY()+2);
+        frame.printf("PRESS ANY KEY TO RETRY");
+        setMidCusr(151, 34, 3);
+        X=frame.getCursorX();
+        frame.setTextColor(ST7735_WHITE);
+        frame.printf("SDCARD STATUS ERROR %x:\n", ret);
+        frame.setCursor(X, frame.getCursorY()+2);
+        frame.println((ret == 263) ? "SDCARD NOT FOUND" : ((ret == -1) ? "UNKNOW FILE SYSTEM" : "UNKNOW ERROR"));
+        frame.setCursor(X, frame.getCursorY()+2);
+        frame.printf("PRESS ANY KEY TO RETRY");
+        if (readOptionKeyEvent == pdTRUE) {
+            MainReDraw();
+            frame.display();
+            ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+            vTaskDelay(4);
+        }
+        vTaskDelay(16);
+        frame.display();
     }
-
-    printf("esp_err_t ret = esp_vfs_spiffs_register(&conf);\n");
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
     ret = esp_vfs_spiffs_register(&conf);
     if (ret == ESP_OK) {
         printf("SPIFFS mounted!\n");
@@ -2715,10 +2735,7 @@ void setup()
     i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
-    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     vTaskDelay(256);
-    xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
     printf("MAIN EXIT\n");
 }
 

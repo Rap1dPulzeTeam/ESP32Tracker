@@ -1411,6 +1411,8 @@ void MainPage() {
                     printf("KEYOK OK!\n");
                     if (sideMenu == 3) {
                         printf("SAMP\n");
+                        MenuPos = 5;
+                        break;
                     }
                     if (sideMenu == 2) {
                         // mute[ChlPos-1] = !mute[ChlPos-1];
@@ -1802,6 +1804,26 @@ void filterSetting() {
     }
 }
 
+void SampEdit() {
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.display();
+    key_event_t optionKeyEvent;
+    for (;;) {
+        frame.setCursor(0, 10);
+        frame.printf("This is Sample Editer");
+        frame.display();
+        vTaskDelay(64);
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == KEY_OK) {
+                MenuPos = 0;
+                break;
+            }
+        }
+    }
+}
+
 void Setting() {
 
     const uint8_t SETTING_NUM = 4;
@@ -1905,6 +1927,11 @@ void display_lcd(void *arg) {
         else if (MenuPos == 4) {
             MainReDraw();
             filterSetting();
+            vTaskDelay(4);
+        }
+        else if (MenuPos == 5) {
+            MainReDraw();
+            SampEdit();
             vTaskDelay(4);
         }
         vTaskDelay(4);

@@ -66,6 +66,8 @@ size_t export_wav_written = 0;
 void *export_wav_buffer;
 uint8_t inputOct = 2;
 bool editMod = false;
+uint16_t limitStats;
+bool fromOtherPage = false;
 
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 Adafruit_MPR121 touchPad = Adafruit_MPR121();
@@ -101,6 +103,7 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_A 7
 #define KEY_B 8
 #define KEY_C 9
+#define LCD_BK 9
 
 class aFrameBuffer : public Adafruit_GFX {
   public:
@@ -171,11 +174,22 @@ const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.917588467
 #define drawMidRect(w, h, color) \
     frame.drawRect(80 - ((w) >> 1), 64 - ((h) >> 1), (80 + ((w) >> 1)) - (80 - ((w) >> 1)), (64 + ((h) >> 1)) - (64 - ((h) >> 1)), (color))
 
+#define drawMidRectOfst(w, h, color, ofstX, ofstY) \
+    frame.drawRect(80 - ((w) >> 1) + (ofstX), 64 - ((h) >> 1) + (ofstY), \
+                   (w), (h), (color))
+
 #define fillMidRect(w, h, color) \
     frame.fillRect(80 - ((w) >> 1), 64 - ((h) >> 1), (80 + ((w) >> 1)) - (80 - ((w) >> 1)), (64 + ((h) >> 1)) - (64 - ((h) >> 1)), (color))
 
+#define fillMidRectOfst(w, h, color, ofstX, ofstY) \
+    frame.fillRect(80 - ((w) >> 1) + (ofstX), 64 - ((h) >> 1) + (ofstY), \
+                   (w), (h), (color))
+
 #define setMidCusr(w, h, ofst) \
     frame.setCursor(80 - ((w) >> 1) + (ofst), 64 - ((h) >> 1) + (ofst))
+
+#define setMidCusrOfst(w, h, ofstX, ofstY) \
+    frame.setCursor(80 - ((w) >> 1) + (ofstX), 64 - ((h) >> 1) + (ofstY))
 
 inline int clamp(int value, int min, int max) {
     if (value < min)
@@ -184,6 +198,65 @@ inline int clamp(int value, int min, int max) {
         return max;
     else
         return value;
+}
+
+class Animation {
+public:
+    float startX, startY;
+    float endX, endY;
+    int16_t currentX, currentY;
+    uint16_t step;
+    uint16_t maxSteps;
+
+    void initAnimation(float x1, float y1, float x2, float y2, uint16_t maxStep) {
+        startX = x1;
+        startY = y1;
+        endX = x2;
+        endY = y2;
+        currentX = startX;
+        currentY = startY;
+        step = 0;
+        maxSteps = maxStep;
+    }
+
+    inline int16_t getAnimationX() {
+        return currentX;
+    }
+
+    inline int16_t getAnimationY() {
+        return currentY;
+    }
+
+    void nextAnimation() {
+        if (step < maxSteps) {
+            float t = (float)step / (float)maxSteps;
+            float scale = 1.0f - expf(-10.0f * t);  // 使用指数衰减函数
+            
+            currentX = roundf(startX * (1 - scale) + endX * scale);
+            currentY = roundf(startY * (1 - scale) + endY * scale);
+
+            step++;
+        }
+    }
+};
+
+void backlightCtrl(void *arg) {
+    // analogWriteFrequency(22050);
+    for (uint16_t i = 0; i < 256; i++) {
+        analogWrite(LCD_BK, i);
+        vTaskDelay(2);
+        // printf("BK %d\n", i);
+    }
+    vTaskDelete(NULL);
+}
+void backlightCtrlFast(void *arg) {
+    // analogWriteFrequency(22050);
+    for (uint16_t i = 0; i < 256; i++) {
+        analogWrite(LCD_BK, i);
+        vTaskDelay(1);
+        // printf("BK %d\n", i);
+    }
+    vTaskDelete(NULL);
 }
 
 int find_max(int size) {
@@ -428,15 +501,17 @@ void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
     limiter->soft_knee = soft_knee;
 }
 
-static inline int16_t audioLimit(Limiter *limiter, int16_t inputSample) {
+static inline int16_t audioLimit(Limiter *limiter, int16_t inputSample, uint16_t *limitOutComp) {
     int16_t absInputSample = inputSample > 0 ? inputSample : -inputSample;
 
     if (absInputSample > limiter->threshold) {
+        *limitOutComp = absInputSample - limiter->threshold;
         float normalizedExcess = (float)(absInputSample - limiter->threshold) / limiter->soft_knee;
         float compressedExcess = tanhf(normalizedExcess) * limiter->soft_knee;
         int16_t compressedSample = limiter->threshold + (int16_t)compressedExcess;
         return inputSample > 0 ? compressedSample : -compressedSample;
     } else {
+        *limitOutComp = 0;
         return inputSample;
     }
 }
@@ -452,8 +527,8 @@ int8_t audio_master_write(const void *src, size_t size, size_t len) {
             return -1;
         }
         if (master_limit) {
-            buffer16BitStro[i].dataL = audioLimit(&limiter, buffer16BitStro[i].dataL);
-            buffer16BitStro[i].dataR = audioLimit(&limiter, buffer16BitStro[i].dataR);
+            buffer16BitStro[i].dataL = audioLimit(&limiter, buffer16BitStro[i].dataL, &limitStats);
+            buffer16BitStro[i].dataR = audioLimit(&limiter, buffer16BitStro[i].dataR, &limitStats);
         }
         if (master_delay) {
             buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, 4096, 0.4f, 0.8f, 0.2f, 4);
@@ -500,13 +575,15 @@ void display(void *arg) {
         if (view_mode) {
             if (MAX_COMP_FINISH) {
                 MAX_COMP_FINISH = false;
+                sprintf(ten, limitStats ? "LIMIT: %5dOVER" : "LIMIT: NO ACTIVE", limitStats);
                 ssd1306_clear_buffer(&dev);
                 ssd1306_display_text(&dev, 0, "VIEW MODE", 10, false);
+                ssd1306_display_text(&dev, 1, ten, 16, false);
                 for (uint8_t i = 0; i < 16; i++) {
-                    _ssd1306_line(&dev, 0, i+16, wave_MAX_L_OUT>>8, i+16, false);
+                    _ssd1306_line(&dev, 0, i+20, wave_MAX_L_OUT>>8, i+20, false);
                 }
                 for (uint8_t i = 0; i < 16; i++) {
-                    _ssd1306_line(&dev, 0, i+34, wave_MAX_R_OUT>>8, i+34, false);
+                    _ssd1306_line(&dev, 0, i+38, wave_MAX_R_OUT>>8, i+38, false);
                 }
                 ssd1306_show_buffer(&dev);
             } else {
@@ -515,7 +592,7 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
-                sprintf(ten, " %2d %2d>%2d %.2f", row_point, part_point, part_table[part_point], stroMix);
+                sprintf(ten, " %2d %2d>%2d %d", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
                 // sprintf(ten, "%d   %d   %d   %d   %d   %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
                 // sprintf(one, "%3d %3d %3d %3d %3d %3d\n", sigBase[0], sigBase[1], sigBase[2], sigBase[3], sigBase[4], sigBase[5]);
                 addr[0] = (uint8_t)(data_index[0] * (32.0f / wave_info[smp_num[0]][0])) & 31;
@@ -523,7 +600,7 @@ void display(void *arg) {
                 addr[2] = (uint8_t)(data_index[2] * (32.0f / wave_info[smp_num[2]][0])) & 31;
                 addr[3] = (uint8_t)(data_index[3] * (32.0f / wave_info[smp_num[3]][0])) & 31;
                 // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
-                ssd1306_display_text(&dev, 0, (char *)"CH1 CH2 CH3 CH4", 16, false);
+                ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
                 ssd1306_display_text(&dev, 6, ten, 16, false);
                 // ssd1306_display_text(&dev, 5, one, 16, false);
                 if (!mute[0]) {
@@ -684,7 +761,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
         }
         int16_t sample2 = (tracker_data_sample[smp_num][nextIdx] * (vole << 1));
         float frac = data_index[chl] - idx;
-        float f_t = (1 - cosf(M_PI * frac)) / 2;
+        float f_t = (1 - cosf(M_PI_F * frac)) / 2;
         result = (1.0f - f_t) * sample1 + f_t * sample2;
     } else if (isCubic) {
         int prevIdx = idx - 1;
@@ -724,11 +801,10 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
 // float frq[CHL_NUM] = {0};
 
 uint16_t part_buffer[4];
-bool loadOk = true;
 
 bool skipToNextPart = false;
 uint8_t skipToAnyPart = false;
-bool lcdOK = true;
+bool lcdOK = false;
 uint8_t BPM = 125;
 uint8_t SPD = 6;
 /*
@@ -909,15 +985,25 @@ char* fileSelect(const char* root_path) {
             }
         }}
     }
-    fillMidRect(80, 20, 0x4208);
-    drawMidRect(80, 20, ST7735_WHITE);
-    setMidCusr(80, 20, 7);
-    frame.setTextColor(0x7bcf);
-    frame.printf("READING...");
-    setMidCusr(80, 20, 6);
-    frame.setTextColor(ST7735_WHITE);
-    frame.printf("READING...");
-    frame.display();
+    uint16_t *snap = (uint16_t*)malloc(160*128*sizeof(uint16_t));
+    memcpy(snap, frame.lcd_buffer, 160*128*sizeof(uint16_t));
+    Animation Anim = Animation();
+    Anim.initAnimation(0, -80, 0, 0, 32);
+    for (uint8_t i = 0; i < 32; i++) {
+        frame.drawRGBBitmap(0, 0, snap, 160, 128);
+        fillMidRectOfst(80, 20, 0x4208, Anim.getAnimationX(), Anim.getAnimationY());
+        drawMidRectOfst(80, 20, ST7735_WHITE, Anim.getAnimationX(), Anim.getAnimationY());
+        setMidCusrOfst(80, 20, Anim.getAnimationX()+7, Anim.getAnimationY()+7);
+        // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
+        frame.setTextColor(0x7bcf);
+        frame.printf("READING...");
+        setMidCusrOfst(80, 20, Anim.getAnimationX()+6, Anim.getAnimationY()+6);
+        frame.setTextColor(ST7735_WHITE);
+        frame.printf("READING...");
+        frame.display();
+        Anim.nextAnimation();
+    }
+    free(snap);
     char* full_path = (char*)malloc(strlen(files[SelPos].name) + strlen(path) + 2);
     sprintf(full_path, "%s/%s", path, files[SelPos].name);
     for (uint16_t i = 0; i < count; i++) {
@@ -951,37 +1037,96 @@ inline void fileOpt() {
         char *fileName = fileSelect("/sdcard");
         int8_t ret = read_tracker_file(fileName);
         free(fileName);
+        uint16_t *snap = (uint16_t*)malloc(160*128*sizeof(uint16_t));
+        memcpy(snap, frame.lcd_buffer, 160*128*sizeof(uint16_t));
+        Animation Anim0 = Animation();
+        Animation Anim1 = Animation();
         if (ret == -1) {
-            fillMidRect(148, 20, 0x4208);
-            drawMidRect(148, 20, ST7735_WHITE);
-            setMidCusr(148, 20, 7);
-            frame.setTextColor(0x7bcf);
-            frame.printf("THIS IS NOT A MOD FILE!");
-            setMidCusr(148, 20, 6);
-            frame.setTextColor(ST7735_WHITE);
-            frame.printf("THIS IS NOT A MOD FILE!");
-            frame.display();
+            Anim0.initAnimation(0, -80, 0, 0, 32);
+            Anim1.initAnimation(0, 0, 0, -80, 32);
+            for (uint8_t i = 0; i < 32; i++) {
+                frame.drawRGBBitmap(0, 0, snap, 160, 128);
+                fillMidRectOfst(148, 20, 0x4208, Anim0.getAnimationX(), Anim0.getAnimationY());
+                drawMidRectOfst(148, 20, ST7735_WHITE, Anim0.getAnimationX(), Anim0.getAnimationY());
+                setMidCusrOfst(148, 20, Anim0.getAnimationX()+7, Anim0.getAnimationY()+7);
+                // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
+                frame.setTextColor(0x7bcf);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                setMidCusrOfst(148, 20, Anim0.getAnimationX()+6, Anim0.getAnimationY()+6);
+                frame.setTextColor(ST7735_WHITE);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                frame.display();
+                Anim0.nextAnimation();
+            }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
+            }
+            for (uint8_t i = 0; i < 32; i++) {
+                frame.drawRGBBitmap(0, 0, snap, 160, 128);
+                fillMidRectOfst(148, 20, 0x4208, Anim1.getAnimationX(), Anim1.getAnimationY());
+                drawMidRectOfst(148, 20, ST7735_WHITE, Anim1.getAnimationX(), Anim1.getAnimationY());
+                setMidCusrOfst(148, 20, Anim1.getAnimationX()+7, Anim1.getAnimationY()+7);
+                // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
+                frame.setTextColor(0x7bcf);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                setMidCusrOfst(148, 20, Anim1.getAnimationX()+6, Anim1.getAnimationY()+6);
+                frame.setTextColor(ST7735_WHITE);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                frame.display();
+                Anim1.nextAnimation();
             }
             MainReDraw();
         } else if (ret == -2) {
-            fillMidRect(148, 20, 0x4208);
-            drawMidRect(148, 20, ST7735_WHITE);
-            setMidCusr(148, 20, 7);
-            frame.setTextColor(0x7bcf);
-            frame.printf("THIS FILE IS TOO LARGE!");
-            setMidCusr(148, 20, 6);
-            frame.setTextColor(ST7735_WHITE);
-            frame.printf("THIS FILE IS TOO LARGE!");
-            frame.display();
+            Anim0.initAnimation(0, -80, 0, 0, 32);
+            Anim1.initAnimation(0, 0, 0, -80, 32);
+            for (uint8_t i = 0; i < 32; i++) {
+                frame.drawRGBBitmap(0, 0, snap, 160, 128);
+                fillMidRectOfst(148, 20, 0x4208, Anim0.getAnimationX(), Anim0.getAnimationY());
+                drawMidRectOfst(148, 20, ST7735_WHITE, Anim0.getAnimationX(), Anim0.getAnimationY());
+                setMidCusrOfst(148, 20, Anim0.getAnimationX()+7, Anim0.getAnimationY()+7);
+                // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
+                frame.setTextColor(0x7bcf);
+                frame.printf("THIS FILE IS TOO LARGE!");
+                setMidCusrOfst(148, 20, Anim0.getAnimationX()+6, Anim0.getAnimationY()+6);
+                frame.setTextColor(ST7735_WHITE);
+                frame.printf("THIS FILE IS TOO LARGE!");
+                frame.display();
+                Anim0.nextAnimation();
+            }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
             }
+            for (uint8_t i = 0; i < 32; i++) {
+                frame.drawRGBBitmap(0, 0, snap, 160, 128);
+                fillMidRectOfst(148, 20, 0x4208, Anim1.getAnimationX(), Anim1.getAnimationY());
+                drawMidRectOfst(148, 20, ST7735_WHITE, Anim1.getAnimationX(), Anim1.getAnimationY());
+                setMidCusrOfst(148, 20, Anim1.getAnimationX()+7, Anim1.getAnimationY()+7);
+                // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
+                frame.setTextColor(0x7bcf);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                setMidCusrOfst(148, 20, Anim1.getAnimationX()+6, Anim1.getAnimationY()+6);
+                frame.setTextColor(ST7735_WHITE);
+                frame.printf("THIS IS NOT A MOD FILE!");
+                frame.display();
+                Anim1.nextAnimation();
+            }
             MainReDraw();
         } else {
+            Animation Anim = Animation();
+            Anim.initAnimation(0, 0, 0, 128, 32);
+            for (uint8_t i = 0; i < 32; i++) {
+                frame.fillScreen(ST7735_BLACK);
+                frame.drawRGBBitmap(0, Anim.getAnimationY(), snap, 160, 128);
+                Anim.nextAnimation();
+                frame.display();
+                analogWrite(LCD_BK, 255-(i<<3));
+            }
+            xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
+            free(snap);
+            fromOtherPage = true;
             break;
         }
+        free(snap);
     }
 }
 
@@ -1064,10 +1209,14 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
     uint8_t OriginY = frame.getCursorY();
     uint8_t Ylen = ((total_options+1)*11)+18;
     int8_t current_option = opt_init_val;
+    int8_t current_last = opt_init_val;
     char * menuStr[total_options];
     for (uint8_t i = 0; i < total_options; i++) {
         menuStr[i] = (char *)va_arg(args, const char *);
     }
+    bool CurChange = false;
+    uint8_t AnimStep = 0;
+    Animation AnimMenu = Animation();
     for (;;) {
         fillMidRect(Xlen, Ylen, 0x4208);
         drawMidRect(Xlen, Ylen, ST7735_WHITE);
@@ -1080,7 +1229,23 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
         setMidCusr(Xlen, Ylen, 2);
         uint8_t CXTmp = frame.getCursorX()+4;
         frame.setCursor(CXTmp, frame.getCursorY()+14);
-        frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
+        if (CurChange) {
+            if (!AnimStep) {
+                AnimMenu.initAnimation(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_last-1)*11),
+                    frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), 16);
+                printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
+            }
+            // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), Xlen - 10, 11, 0x7bef);
+            AnimMenu.nextAnimation();
+            AnimStep++;
+            if (AnimStep >= 16) {
+                CurChange = false;
+                AnimStep = 0;
+            }
+        } else {
+            frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
+        }
         for (uint8_t q = 0; q < total_options; q++) {
             frame.printf("%s\n", menuStr[q]);
             frame.setCursor(CXTmp, frame.getCursorY()+3);
@@ -1090,12 +1255,18 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
             switch (optionKeyEvent.num)
             {
             case KEY_UP:
+                current_last = current_option;
                 current_option--;
                 if (current_option < 1) current_option = total_options+1;
+                CurChange = true;
+                AnimStep = 0;
                 break;
             case KEY_DOWN:
+                current_last = current_option;
                 current_option++;
                 if (current_option > total_options+1) current_option = 1;
+                CurChange = true;
+                AnimStep = 0;
                 break;
             }
             if (optionKeyEvent.num == 5) {
@@ -1112,6 +1283,7 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
 }
 
 void MainPage() {
+    if (fromOtherPage) {fromOtherPage = false;xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);}
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.fillRect(113, 19, 47, 7, 0xa514);
@@ -1719,6 +1891,8 @@ void wav_player() {
                 break;
             }
         }
+        if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
+        if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
         refs_p++;
         vTaskDelay(1);
     }
@@ -1801,7 +1975,7 @@ void filterSetting() {
 void SampEdit() {
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
-    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.fillRect(0, 10, 160, 8, 0x42d0);
     frame.display();
     key_event_t optionKeyEvent;
     for (;;) {
@@ -1886,16 +2060,16 @@ void Setting() {
             }
         }
     }
+    fromOtherPage = true;
 }
 
 void display_lcd(void *arg) {
+    xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
     MainReDraw();
-    lcdOK = false;
     MenuPos = 0;
     read_pattern_table(tracker_data_header);
     read_wave_info(tracker_data_header);
     part_point = 0;
-    loadOk = true;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
     vTaskDelay(16);
     for (;;) {
@@ -2351,7 +2525,6 @@ void comp(void *arg) {
                 }
             }
         } else {
-            loadOk = false;
             if (!view_mode) {
                 for (uint16_t i = 0; i < BUFF_SIZE; i++) {
                     if (wave_info[smp_num[0]][4] > 2) {
@@ -2486,18 +2659,18 @@ void refesMpr121(void *arg) {
                 touchPadEvent.status = KEY_ATTACK;
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
-                }
+                }// else {
+                //    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", touchPadEvent.num);
+                //}
             }
             if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
                 touchPadEvent.num = i;
                 touchPadEvent.status = KEY_RELEASE;
                 if (xQueueSend(xTouchPadQueue, &touchPadEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: TOUCHPAD QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
-                }
+                }// else {
+                //    printf("INFO: TOUCHPAD SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=RELEASE\n", touchPadEvent.num);
+                //}
             }
         }
         lasttouched = currtouched;
@@ -2637,12 +2810,15 @@ void input(void *arg) {
 
 void setup()
 {
+    pinMode(LCD_BK, OUTPUT);
+    // analogWriteFrequency(22050);
+    analogWrite(LCD_BK, 0);
     tft.initR(INITR_BLACKTAB);
     tft.setSPISpeed(79000000);
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
     frame.setFont(&abcd);
-    initLimiter(&limiter, 16384, 16380);
+    initLimiter(&limiter, 16384*global_vol, 16380*global_vol);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     // initDelayBuffer();
@@ -2672,6 +2848,7 @@ void setup()
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
     while (ret != ESP_OK) {
+        analogWrite(LCD_BK, 255);
         MainReDraw();
         fillMidRect(151, 34, 0x4208);
         drawMidRect(151, 34, ST7735_WHITE);

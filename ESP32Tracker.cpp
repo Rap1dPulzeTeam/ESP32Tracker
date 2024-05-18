@@ -2084,14 +2084,21 @@ void SampEdit() {
     frame.setCursor(0, 10);
     frame.printf("Sample Editer");
     for (;;) {
-        frame.setCursor(0, 16);
+        frame.fillRect(0, 19, 160, 109, ST7735_BLACK);
+        frame.drawFastVLine(42, 19, 150, 0xffff);
+        frame.drawFastVLine(42, 19, 150, 0xf79e);
+        frame.drawFastHLine(42, 40, 117, 0xf79e);
+
+        frame.fillRect(43, 41, 116, 86, 0x8410);
+
+        frame.setCursor(0, 20);
         if (CurChange) {
             if (!AnimStep) {
-                AnimMenu.initAnimation(0, (optPos_last*10)+27, 0, (optPos*10)+27, 16);
+                AnimMenu.initAnimation(0, (optPos_last*10)+19, 0, (optPos*10)+19, 16);
                 printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
             }
             // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
-            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 160, 11, 0x528a);
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 42, 10, 0x528a);
             AnimMenu.nextAnimation(10);
             AnimStep++;
             if (AnimStep >= 16) {
@@ -2099,7 +2106,7 @@ void SampEdit() {
                 AnimStep = 0;
             }
         } else {
-            frame.fillRect(0, (optPos*10)+27, 160, 11, 0x528a);
+            frame.fillRect(0, (optPos*10)+19, 42, 10, 0x528a);
         }
         for (uint8_t i = 0; i < OPTION_NUM; i++) {
             frame.printf("%s\n", menuStr[i]);

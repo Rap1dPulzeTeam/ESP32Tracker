@@ -20,9 +20,13 @@ setCursor(0, 10);
 printf("Sample Editer");
 
 fillRect(0, (optPos*10)+19, 41, 11, 0x528a);
+fillRect((optPos*43)+43, 19, 41, 20, 0x528a);
+
 drawFastVLine(42, 19, 150, 0xffff);
 drawFastVLine(42, 19, 150, 0xf79e);
 drawFastHLine(42, 40, 117, 0xf79e);
+
+fillRect(43, 41, 116, 86, 0x8410);
 
 setCursor(0, 20);
 printf("New\n");
@@ -33,5 +37,8 @@ printf("Info\n");
 setCursor(0, self.frame_buffer.getCursorY()+2);
 printf("Close\n");
 setCursor(0, self.frame_buffer.getCursorY()+2);
-display();
 
+setCursor(46, 24);
+printf("LOOP" if enbLoop else "LOOP: DISABLE\n");
+
+display();

@@ -43,16 +43,30 @@ class FrameBuffer:
         self.cursor_x = x
         self.cursor_y = y
 
+    def getCursorX(self):
+        return self.cursor_x
+    
+    def getCursorY(self):
+        return self.cursor_y
+
     def printf(self, format_str, *args):
         text = format_str % args
         for char in text:
+            if char == '\n':  # 检测到换行字符
+                self.cursor_x = 0
+                self.cursor_y += 8 * self.text_size
+                continue  # 继续下一个字符的处理
+
             if self.cursor_x >= self.width:
                 self.cursor_x = 0
                 self.cursor_y += 8 * self.text_size
+
             if self.cursor_y >= self.height:
                 self.cursor_y = 0
+
             self.draw.text((self.cursor_x, self.cursor_y), char, font=self.font, fill=self.text_color)
-            self.cursor_x += 8 * self.text_size
+            self.cursor_x += 6 * self.text_size
+
         self.update_display()
 
     def setTextSize(self, n):
@@ -197,6 +211,8 @@ class App:
                 name, value = parts[1], parts[2]
                 self.frame_buffer.setVar(name, value)
                 self.error_text.insert(tk.END, f"Variable '{name}' set to {value}\n")
+                self.frame_buffer.update_display()
+                
             elif parts[0] == "getVar" and len(parts) == 2:
                 name = parts[1]
                 value = self.frame_buffer.getVar(name)

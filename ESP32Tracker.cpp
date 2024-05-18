@@ -238,21 +238,25 @@ public:
 };
 
 void backlightCtrl(void *arg) {
+    printf("BACKLIGHT START\n");
     // analogWriteFrequency(22050);
     for (uint16_t i = 0; i < 256; i++) {
         analogWrite(LCD_BK, i);
         vTaskDelay(2);
         // printf("BK %d\n", i);
     }
+    printf("BACKLIGHT END\n");
     vTaskDelete(NULL);
 }
 void backlightCtrlFast(void *arg) {
+    printf("BACKLIGHT FAST START\n");
     // analogWriteFrequency(22050);
     for (uint16_t i = 0; i < 256; i++) {
         analogWrite(LCD_BK, i);
         vTaskDelay(1);
         // printf("BK %d\n", i);
     }
+    printf("BACKLIGHT FAST END\n");
     vTaskDelete(NULL);
 }
 
@@ -2077,11 +2081,11 @@ void SampEdit() {
     uint8_t AnimStep = 0;
     key_event_t optionKeyEvent;
     Animation AnimMenu = Animation();
+    frame.setCursor(0, 10);
+    frame.printf("Sample Editer");
     for (;;) {
-        frame.setCursor(0, 10);
-        frame.printf("Sample Editer");
+        frame.setCursor(0, 16);
         if (CurChange) {
-            frame.setCursor(0, 16);
             if (!AnimStep) {
                 AnimMenu.initAnimation(0, (optPos_last*10)+27, 0, (optPos*10)+27, 16);
                 printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
@@ -2126,6 +2130,7 @@ void SampEdit() {
             }
         }
     }
+    fromOtherPage = true;
 }
 
 void Setting() {

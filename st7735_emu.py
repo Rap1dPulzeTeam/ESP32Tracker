@@ -1,6 +1,7 @@
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog, messagebox
+from tkinter import scrolledtext, simpledialog, messagebox, filedialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont
+import threading
 
 class FrameBuffer:
     def __init__(self, canvas, width=160, height=128, scale=5):
@@ -120,14 +121,6 @@ class FrameBuffer:
     def getVar(self, name):
         return eval(name, self.variables)
 
-    def update_display(self):
-        display_image = self.image.copy()
-        if self.grid_enabled:
-            display_image.paste(self.grid_image, (0, 0), self.grid_image)
-        scaled_image = display_image.resize((self.width * self.scale, self.height * self.scale), Image.NEAREST)
-        self.tk_image = ImageTk.PhotoImage(scaled_image)
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
-
     def enable_grid(self):
         self.grid_enabled = True
         self.update_display()
@@ -136,10 +129,33 @@ class FrameBuffer:
         self.grid_enabled = False
         self.update_display()
 
+    def update_display(self):
+        def update():
+            display_image = self.image.copy()
+            if self.grid_enabled:
+                display_image.paste(self.grid_image, (0, 0), self.grid_image)
+            scaled_image = display_image.resize((self.width * self.scale, self.height * self.scale), Image.NEAREST)
+            self.tk_image = ImageTk.PhotoImage(scaled_image)
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+        
+        # 使用线程来更新显示，防止界面冻结
+        threading.Thread(target=update).start()
+
 class App:
     def __init__(self, root):
         self.root = root
         self.root.title("ST7735 EMU")
+
+        # 创建菜单栏
+        menubar = tk.Menu(root)
+        root.config(menu=menubar)
+        
+        # 创建文件菜单
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Save code", command=self.save_code)
+        file_menu.add_command(label="Load code", command=self.load_code)
+        file_menu.add_command(label="Export PNG", command=self.export_png)
 
         self.canvas = tk.Canvas(root, width=160*5, height=128*5, bg="black")
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
@@ -185,12 +201,15 @@ class App:
             self.error_text.config(state=tk.DISABLED)
 
     def execute_command(self, command):
-        try:
-            exec(f"self.frame_buffer.{command}", {'self': self, **self.frame_buffer.variables})
-        except Exception as e:
-            self.error_text.config(state=tk.NORMAL)
-            self.error_text.insert(tk.END, f"Error executing command '{command}': {e}\n")
-            self.error_text.config(state=tk.DISABLED)
+        def execute():
+            try:
+                exec(f"self.frame_buffer.{command}", {'self': self, **self.frame_buffer.variables})
+            except Exception as e:
+                self.error_text.config(state=tk.NORMAL)
+                self.error_text.insert(tk.END, f"Error executing command '{command}': {e}\n")
+                self.error_text.config(state=tk.DISABLED)
+        
+        threading.Thread(target=execute).start()
 
     def execute_tool_command(self, command):
         self.error_text.config(state=tk.NORMAL)
@@ -211,6 +230,7 @@ class App:
                 name, value = parts[1], parts[2]
                 self.frame_buffer.setVar(name, value)
                 self.error_text.insert(tk.END, f"Variable '{name}' set to {value}\n")
+                self.run_commands()
                 self.frame_buffer.update_display()
                 
             elif parts[0] == "getVar" and len(parts) == 2:
@@ -234,12 +254,38 @@ class App:
     def open_var_manager(self):
         VarManager(self.frame_buffer)
 
+    def save_code(self):
+        filepath = filedialog.asksaveasfilename(defaultextension=".stg", filetypes=[("ST7735 Graphing", "*.stg")])
+        if filepath:
+            code = self.input_text.get("1.0", tk.END)
+            with open(filepath, 'w') as file:
+                file.write(code)
+                messagebox.showinfo("Save", "Save Successful")
+
+    def load_code(self):
+        filepath = filedialog.askopenfilename(filetypes=[("ST7735 Graphing", "*.stg")])
+        if filepath:
+            with open(filepath, 'r') as file:
+                code = file.read()
+                self.input_text.delete("1.0", tk.END)
+                self.input_text.insert("1.0", code)
+                messagebox.showinfo("Load", "Load Successful")
+
+            self.run_commands()
+            self.frame_buffer.update_display()
+
+    def export_png(self):
+        filepath = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", "*.png")])
+        if filepath:
+            self.frame_buffer.image.save(filepath)
+            messagebox.showinfo("Export PNG", "Export PNG successfully")
+
 class VarManager(tk.Toplevel):
     def __init__(self, frame_buffer):
         super().__init__()
         self.frame_buffer = frame_buffer
         self.title("Variable Manager")
-        self.geometry("600x600")
+        self.geometry("650x600")
 
         self.var_listbox = tk.Listbox(self)
         self.var_listbox.pack(fill=tk.BOTH, expand=True)

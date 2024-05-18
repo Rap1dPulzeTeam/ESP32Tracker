@@ -1,0 +1,37 @@
+fillScreen(ST7735_BLACK);
+setTextSize(1);
+setTextColor(0x2945);
+setCursor(2, 2);
+printf("ESP32Tracker");
+setTextColor(0x7bcf);
+setCursor(1, 1);
+printf("ESP32Tracker      libchara");
+setTextColor(ST7735_WHITE);
+setCursor(0, 0);
+printf("ESP32Tracker");
+setTextColor(ST7735_WHITE);
+setTextSize(0);
+
+drawFastHLine(0, 9, 160, 0xe71c);
+drawFastHLine(0, 18, 160, 0xe71c);
+fillRect(0, 10, 160, 7, 0x42d0);
+
+setCursor(0, 10);
+printf("Sample Editer");
+
+fillRect(0, (optPos*10)+19, 41, 11, 0x528a);
+drawFastVLine(42, 19, 150, 0xffff);
+drawFastVLine(42, 19, 150, 0xf79e);
+drawFastHLine(42, 40, 117, 0xf79e);
+
+setCursor(0, 20);
+printf("New\n");
+setCursor(0, self.frame_buffer.getCursorY()+2);
+printf("Load\n");
+setCursor(0, self.frame_buffer.getCursorY()+2);
+printf("Info\n");
+setCursor(0, self.frame_buffer.getCursorY()+2);
+printf("Close\n");
+setCursor(0, self.frame_buffer.getCursorY()+2);
+display();
+

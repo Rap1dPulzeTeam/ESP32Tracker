@@ -45,9 +45,6 @@ uint8_t **tracker_data_pattern = NULL;
 int8_t *tracker_data_sample[33];
 uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
-void fillMidRect(uint8_t w, uint8_t h, uint16_t color);
-void drawMidRect(uint8_t w, uint8_t h, uint16_t color);
-void setMidCusr(uint8_t w, uint8_t h, int8_t ofst);
 void read_pattern_table(uint8_t head_data[1084]);
 void read_wave_info(uint8_t head_data[1084]);
 // void comp_wave_ofst();
@@ -227,10 +224,10 @@ public:
         return currentY;
     }
 
-    void nextAnimation() {
+    void nextAnimation(float k) {
         if (step < maxSteps) {
             float t = (float)step / (float)maxSteps;
-            float scale = 1.0f - expf(-10.0f * t);  // 使用指数衰减函数
+            float scale = 1.0f - expf(-k * t);  // 使用指数衰减函数
             
             currentX = roundf(startX * (1 - scale) + endX * scale);
             currentY = roundf(startY * (1 - scale) + endY * scale);
@@ -818,6 +815,7 @@ bool keySpace = false;
 int8_t ChlPos = 0;
 // bool ChlMenu = false;
 int8_t ChlMenuPos = 0;
+int8_t ChlMenuPos_last = 0;
 bool windowsClose = true;
 int8_t MenuPos = 2;
 TaskHandle_t COMP;
@@ -835,10 +833,12 @@ uint16_t midi_period_table[NUM_RANGES][NOTES_PER_RANGE] = {
     // C-3 to B-3
     {214, 202, 190, 180, 170, 160, 151, 143, 135, 127, 120, 113}
 };
+
 typedef struct {
-    const int frequency;
+    const uint16_t frequency;
     const char *note_name;
 } Note;
+
 Note period_table[NUM_RANGES][NOTES_PER_RANGE] = {
     // C-1 to B-1
     {{856, "C-1"}, {808, "C#1"}, {762, "D-1"}, {720, "D#1"}, {678, "E-1"}, {640, "F-1"},
@@ -850,21 +850,38 @@ Note period_table[NUM_RANGES][NOTES_PER_RANGE] = {
     {{214, "C-3"}, {202, "C#3"}, {190, "D-3"}, {180, "D#3"}, {170, "E-3"}, {160, "F-3"},
         {151, "F#3"}, {143, "G-3"}, {135, "G#3"}, {127, "A-3"}, {120, "A#3"}, {113, "B-3"}}
 };
+
 const char* findNote(int frequency) {
+    int low, high, mid;
     for (int i = 0; i < NUM_RANGES; ++i) {
-        for (int j = 0; j < NOTES_PER_RANGE; ++j) {
-            if (period_table[i][j].frequency == frequency) {
-                return period_table[i][j].note_name; // 找到对应的音符，返回音符名
+        low = 0;
+        high = NOTES_PER_RANGE - 1;
+        while (low <= high) {
+            mid = low + (high - low) / 2; // 计算中间位置
+            if (period_table[i][mid].frequency == frequency) {
+                return period_table[i][mid].note_name; // 找到音符，返回音符名
+            } else if (period_table[i][mid].frequency < frequency) {
+                high = mid - 1; // 查找左半部分
+            } else {
+                low = mid + 1; // 查找右半部分
             }
         }
     }
-    return "???";
+    return "???"; // 没有找到对应的音符
 }
+
+int main() {
+    const char *note = findNote(808); // 测试查找频率为808的音符
+    printf("Note: %s\n", note);
+    return 0;
+}
+
 char* fileSelect(const char* root_path) {
     playStat = false;
     char path[256];
     uint8_t path_depth = 0;
     int16_t SelPos = 0;
+    int16_t SelPos_last = 0;
     uint8_t pg = 0;
     FileInfo* files = NULL;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -873,6 +890,12 @@ char* fileSelect(const char* root_path) {
     int count = list_directory(path, &files);
     bool emyDir = false;
     key_event_t optionKeyEvent;
+
+    bool CurChange = true;
+    uint8_t AnimStep = 0;
+
+    Animation AnimMenu = Animation();
+
     for (;;) {
         char* showBuf;
         frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -887,7 +910,24 @@ char* fileSelect(const char* root_path) {
         // shortenFileName(root_path, 12, showBuf);
         frame.printf("%s: %d FILE/DIR\n", showBuf, count);
         free(showBuf);
-        frame.fillRect(0, ((SelPos%10)*10)+28, 160, 11, 0x528a);
+
+        if (CurChange) {
+            if (!AnimStep) {
+                AnimMenu.initAnimation(0, ((SelPos_last)*10)+28, 0, ((SelPos%10)*10)+28, 16);
+                printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
+            }
+            // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 160, 11, 0x528a);
+            AnimMenu.nextAnimation(10);
+            AnimStep++;
+            if (AnimStep >= 16) {
+                CurChange = false;
+                AnimStep = 0;
+            }
+        } else {
+            frame.fillRect(0, ((SelPos%10)*10)+28, 160, 11, 0x528a);
+        }
+
         frame.drawFastHLine(0, 27, 160, 0xa6bf);
         frame.setCursor(frame.getCursorX(), frame.getCursorY()+3);
         frame.drawFastVLine(134, 28, 100, 0xa6bf);
@@ -936,16 +976,22 @@ char* fileSelect(const char* root_path) {
                 }
                 break;
             case KEY_UP:
+                SelPos_last = SelPos % 10;
                 SelPos--;
                 if (SelPos < 0) {
                     SelPos = count-1;
                 }
+                CurChange = true;
+                AnimStep = 0;
                 break;
             case KEY_DOWN:
+                SelPos_last = SelPos % 10;
                 SelPos++;
                 if (SelPos > count-1) {
                     SelPos = 0;
                 }
+                CurChange = true;
+                AnimStep = 0;
                 break;
             }
             if (optionKeyEvent.num == KEY_OK) {
@@ -1001,7 +1047,7 @@ char* fileSelect(const char* root_path) {
         frame.setTextColor(ST7735_WHITE);
         frame.printf("READING...");
         frame.display();
-        Anim.nextAnimation();
+        Anim.nextAnimation(8);
     }
     free(snap);
     char* full_path = (char*)malloc(strlen(files[SelPos].name) + strlen(path) + 2);
@@ -1056,7 +1102,7 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS IS NOT A MOD FILE!");
                 frame.display();
-                Anim0.nextAnimation();
+                Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
@@ -1073,7 +1119,7 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS IS NOT A MOD FILE!");
                 frame.display();
-                Anim1.nextAnimation();
+                Anim1.nextAnimation(8);
             }
             MainReDraw();
         } else if (ret == -2) {
@@ -1091,7 +1137,7 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS FILE IS TOO LARGE!");
                 frame.display();
-                Anim0.nextAnimation();
+                Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
@@ -1108,7 +1154,7 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS IS NOT A MOD FILE!");
                 frame.display();
-                Anim1.nextAnimation();
+                Anim1.nextAnimation(8);
             }
             MainReDraw();
         } else {
@@ -1117,7 +1163,7 @@ inline void fileOpt() {
             for (uint8_t i = 0; i < 32; i++) {
                 frame.fillScreen(ST7735_BLACK);
                 frame.drawRGBBitmap(0, Anim.getAnimationY(), snap, 160, 128);
-                Anim.nextAnimation();
+                Anim.nextAnimation(9);
                 frame.display();
                 analogWrite(LCD_BK, 255-(i<<3));
             }
@@ -1176,7 +1222,7 @@ uint8_t showTmpEFX1;
 uint8_t showTmpEFX2_1;
 uint8_t showTmpEFX2_2;
 
-void windowsMenu(const char *title, uint8_t current_option, uint8_t total_options, uint8_t Xlen, ...) {
+void windowsMenu(const char *title, uint8_t current_option, uint8_t current_last, uint8_t total_options, uint8_t Xlen, Animation& menuAnim, bool CurChange, uint8_t animStep, ...) {
     va_list args;
     va_start(args, Xlen);
     uint8_t OriginX = frame.getCursorX();
@@ -1193,11 +1239,25 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t total_option
     setMidCusr(Xlen, Ylen, 2);
     uint8_t CXTmp = frame.getCursorX()+4;
     frame.setCursor(CXTmp, frame.getCursorY()+14);
-    frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
+
+    if (CurChange) {
+        if (!animStep) {
+            menuAnim.initAnimation(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_last-1)*11),
+                frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), 16);
+            printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", menuAnim.startX, menuAnim.startY, menuAnim.endX, menuAnim.endY);
+        }
+        // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", menuAnim.startX, menuAnim.startY, menuAnim.endX, menuAnim.endY, menuAnim.getAnimationX(), menuAnim.getAnimationY());
+        frame.fillRect(menuAnim.getAnimationX(), menuAnim.getAnimationY(), Xlen - 10, 11, 0x7bef);
+        menuAnim.nextAnimation(14);
+    } else {
+        frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
+    }
+
     for (uint8_t q = 0; q < total_options; q++) {
         frame.printf("%s\n", va_arg(args, const char *));
         frame.setCursor(CXTmp, frame.getCursorY()+3);
     }
+
     frame.setCursor(OriginX, OriginY);
 }
 
@@ -1237,7 +1297,7 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
             }
             // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
             frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), Xlen - 10, 11, 0x7bef);
-            AnimMenu.nextAnimation();
+            AnimMenu.nextAnimation(10);
             AnimStep++;
             if (AnimStep >= 16) {
                 CurChange = false;
@@ -1291,6 +1351,7 @@ void MainPage() {
     frame.fillRect(0, 10, 160, 8, 0x2104);
     uint8_t sideMenu = 0;
     uint8_t fileMenu = 0;
+    uint8_t fileMenu_last = 0;
     uint16_t viewTmp[4];
     key_event_t optionKeyEvent;
     key_event_t touchPadEvent;
@@ -1299,6 +1360,9 @@ void MainPage() {
     bool fnB = false;
     bool fnC = false;
     // uint8_t test = 0;
+    Animation AnimMenu = Animation();
+    uint8_t animStep = 0;
+    bool CurChange = false;
     for (;;) {
         if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
         if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
@@ -1493,20 +1557,30 @@ void MainPage() {
             }
 
             if (fileMenu) {
-                // sideMenu = 2;
-                windowsMenu("FILE", fileMenu, 5, 80, "New", "Open", "Save", "Setting", "Close");
+                windowsMenu("FILE", fileMenu, fileMenu_last, 5, 80, AnimMenu, CurChange, animStep, "New", "Open", recMod ? "Recording..." : "Record", "Setting", "Close");
+                animStep++;
+                if (animStep > 16) {
+                    CurChange = false;
+                    animStep = 0;
+                }
                 if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
                     PerStat = pdFALSE;
                     switch (optionKeyEvent.num)
                     {
                     case KEY_UP:
+                        fileMenu_last = fileMenu;
                         fileMenu--;
                         if (fileMenu < 1) fileMenu = 5;
+                        CurChange = true;
+                        animStep = 0;
                         break;
                     
                     case KEY_DOWN:
+                        fileMenu_last = fileMenu;
                         fileMenu++;
                         if (fileMenu > 5) fileMenu = 1;
+                        CurChange = true;
+                        animStep = 0;
                         break;
                     }
                     if (optionKeyEvent.num == KEY_OK) {
@@ -1519,7 +1593,7 @@ void MainPage() {
                             MenuPos = 3;
                             break;
                         }
-                        if (fileMenu == 3) {
+                        if (fileMenu == 3 && !recMod) {
                             playStat = false;
                             recMod = true;
                             printf("SAVE!\n");
@@ -1546,6 +1620,9 @@ void MainPage() {
                             fileMenu = 0;
                             newFileInit();
                         }
+                        fileMenu_last = 0;
+                        CurChange = false;
+                        animStep = 0;
                     }
                 }
             }
@@ -1604,19 +1681,30 @@ void MainPage() {
         if (ChlMenuPos) {
             char menuShow[13];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
-            windowsMenu(menuShow, ChlMenuPos, 3, 90, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
+            windowsMenu(menuShow, ChlMenuPos, ChlMenuPos_last, 3, 90, AnimMenu, CurChange, animStep, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
+            animStep++;
+            if (animStep > 16) {
+                CurChange = false;
+                animStep = 0;
+            }
             if (PerStat == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
                 PerStat = pdFALSE;
                 switch (optionKeyEvent.num)
                 {
                 case KEY_UP:
+                    ChlMenuPos_last = ChlMenuPos;
                     ChlMenuPos--;
                     if (ChlMenuPos < 1) ChlMenuPos = 3;
+                    CurChange = true;
+                    animStep = 0;
                     break;
                 
                 case KEY_DOWN:
+                    ChlMenuPos_last = ChlMenuPos;
                     ChlMenuPos++;
                     if (ChlMenuPos > 3) ChlMenuPos = 1;
+                    CurChange = true;
+                    animStep = 0;
                     break;
 
                 case KEY_L:
@@ -1633,6 +1721,9 @@ void MainPage() {
                     if (ChlMenuPos == 3) {
                         ChlMenuPos = 0;
                         windowsClose = true;
+                        ChlMenuPos_last = 0;
+                        CurChange = false;
+                        animStep = 0;
                     }
                     if (ChlMenuPos == 1) mute[ChlPos-1] = !mute[ChlPos-1];
                     if (ChlMenuPos == 2) {
@@ -1973,19 +2064,64 @@ void filterSetting() {
 }
 
 void SampEdit() {
+    const uint8_t OPTION_NUM = 4;
+    const char *menuStr[OPTION_NUM] = {"New", "Load", "Info", "Close"};
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 8, 0x42d0);
     frame.display();
+    bool confMenu = false;
+    uint8_t optPos = 0;
+    uint8_t optPos_last = 0;
+    bool CurChange = true;
+    uint8_t AnimStep = 0;
     key_event_t optionKeyEvent;
+    Animation AnimMenu = Animation();
     for (;;) {
         frame.setCursor(0, 10);
         frame.printf("Sample Editer");
+        if (CurChange) {
+            frame.setCursor(0, 16);
+            if (!AnimStep) {
+                AnimMenu.initAnimation(0, (optPos_last*10)+27, 0, (optPos*10)+27, 16);
+                printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
+            }
+            // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 160, 11, 0x528a);
+            AnimMenu.nextAnimation(10);
+            AnimStep++;
+            if (AnimStep >= 16) {
+                CurChange = false;
+                AnimStep = 0;
+            }
+        } else {
+            frame.fillRect(0, (optPos*10)+27, 160, 11, 0x528a);
+        }
+        for (uint8_t i = 0; i < OPTION_NUM; i++) {
+            frame.printf("%s\n", menuStr[i]);
+            frame.setCursor(0, frame.getCursorY()+2);
+        }
         frame.display();
-        vTaskDelay(64);
+        vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
                 MenuPos = 0;
+                break;
+            }
+            switch (optionKeyEvent.num)
+            {
+            case KEY_UP:
+                optPos_last = optPos;
+                optPos--;
+                CurChange = true;
+                AnimStep = 0;
+                break;
+            
+            case KEY_DOWN:
+                optPos_last = optPos;
+                optPos++;
+                CurChange = true;
+                AnimStep = 0;
                 break;
             }
         }
@@ -1993,12 +2129,15 @@ void SampEdit() {
 }
 
 void Setting() {
+    bool CurChange = true;
+    uint8_t AnimStep = 0;
 
     const uint8_t SETTING_NUM = 4;
     key_event_t optionKeyEvent;
 
     const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Close"};
     uint8_t optPos = 0;
+    uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
     frame.setCursor(1, 11);
@@ -2007,10 +2146,26 @@ void Setting() {
     frame.printf("SETTINGS\n");
     frame.setTextSize(0);
     frame.drawFastHLine(0, 26, 160, 0xa6bf);
+    Animation AnimMenu = Animation();
     for (;;) {
         frame.fillRect(0, 27, 160, 107, ST7735_BLACK);
         frame.setCursor(0, 29);
-        frame.fillRect(0, (optPos*10)+27, 160, 11, 0x528a);
+        if (CurChange) {
+            if (!AnimStep) {
+                AnimMenu.initAnimation(0, (optPos_last*10)+27, 0, (optPos*10)+27, 16);
+                printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
+            }
+            // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 160, 11, 0x528a);
+            AnimMenu.nextAnimation(10);
+            AnimStep++;
+            if (AnimStep >= 16) {
+                CurChange = false;
+                AnimStep = 0;
+            }
+        } else {
+            frame.fillRect(0, (optPos*10)+27, 160, 11, 0x528a);
+        }
         for (uint8_t i = 0; i < SETTING_NUM; i++) {
             frame.printf("%s\n", menuStr[i]);
             frame.setCursor(0, frame.getCursorY()+2);
@@ -2051,11 +2206,17 @@ void Setting() {
             switch (optionKeyEvent.num)
             {
             case KEY_UP:
+                optPos_last = optPos;
                 optPos--;
+                CurChange = true;
+                AnimStep = 0;
                 break;
             
             case KEY_DOWN:
+                optPos_last = optPos;
                 optPos++;
+                CurChange = true;
+                AnimStep = 0;
                 break;
             }
         }
@@ -2813,6 +2974,7 @@ void setup()
     pinMode(LCD_BK, OUTPUT);
     // analogWriteFrequency(22050);
     analogWrite(LCD_BK, 0);
+    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0); 
     tft.initR(INITR_BLACKTAB);
     tft.setSPISpeed(79000000);
     tft.setRotation(3);
@@ -2845,7 +3007,6 @@ void setup()
     slot_config.d0 = GPIO_NUM_45;
     key_event_t optionKeyEvent;
     xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
     while (ret != ESP_OK) {
         analogWrite(LCD_BK, 255);

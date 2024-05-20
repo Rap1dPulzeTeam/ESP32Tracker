@@ -34,6 +34,7 @@
 #include "audioTypedef.h"
 #include <Adafruit_MPR121.h>
 #include "abcd.h"
+#include "esp32/clk.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -273,7 +274,15 @@ int find_max(int size) {
     return max;
 }
 
-uint16_t wave_info[33][5];
+typedef struct {
+    uint16_t len;
+    uint8_t pan;
+    uint8_t vol;
+    uint16_t loopStart;
+    uint16_t loopEnd;
+} samp_info;
+
+samp_info wave_info[33];
 uint32_t wav_ofst[34];
 
 bool mute[4] = {false, false, false, false};
@@ -561,10 +570,12 @@ void display(void *arg) {
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
-    ssd1306_display_text(&dev, 2, (char *)"WAITING....", 12, false);
-    vTaskDelay(2);
+    ssd1306_display_text(&dev, 0, (char *)"Welcome to", 11, false);
+    ssd1306_display_text(&dev, 1, (char *)"ESP32Tracker", 13, false);
+    ssd1306_display_text(&dev, 2, (char *)"BOOTING....", 12, false);
+    vTaskDelay(32);
     for (;;) {
-        vTaskDelay(2);
+        vTaskDelay(32);
         if (dispRedy) {
             break;
         }
@@ -1039,7 +1050,7 @@ char* fileSelect(const char* root_path) {
     memcpy(snap, frame.lcd_buffer, 160*128*sizeof(uint16_t));
     Animation Anim = Animation();
     Anim.initAnimation(0, -80, 0, 0, 32);
-    for (uint8_t i = 0; i < 32; i++) {
+    for (uint8_t i = 0; i < 26; i++) {
         frame.drawRGBBitmap(0, 0, snap, 160, 128);
         fillMidRectOfst(80, 20, 0x4208, Anim.getAnimationX(), Anim.getAnimationY());
         drawMidRectOfst(80, 20, ST7735_WHITE, Anim.getAnimationX(), Anim.getAnimationY());
@@ -1094,7 +1105,7 @@ inline void fileOpt() {
         if (ret == -1) {
             Anim0.initAnimation(0, -80, 0, 0, 32);
             Anim1.initAnimation(0, 0, 0, -80, 32);
-            for (uint8_t i = 0; i < 32; i++) {
+            for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
                 fillMidRectOfst(148, 20, 0x4208, Anim0.getAnimationX(), Anim0.getAnimationY());
                 drawMidRectOfst(148, 20, ST7735_WHITE, Anim0.getAnimationX(), Anim0.getAnimationY());
@@ -1106,12 +1117,13 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS IS NOT A MOD FILE!");
                 frame.display();
+                // printf("%d ANIM %d\n", i, Anim0.getAnimationY());
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
             }
-            for (uint8_t i = 0; i < 32; i++) {
+            for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
                 fillMidRectOfst(148, 20, 0x4208, Anim1.getAnimationX(), Anim1.getAnimationY());
                 drawMidRectOfst(148, 20, ST7735_WHITE, Anim1.getAnimationX(), Anim1.getAnimationY());
@@ -1123,13 +1135,14 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS IS NOT A MOD FILE!");
                 frame.display();
+                // printf("%d ANIM %d\n", i, Anim1.getAnimationY());
                 Anim1.nextAnimation(8);
             }
             MainReDraw();
         } else if (ret == -2) {
             Anim0.initAnimation(0, -80, 0, 0, 32);
             Anim1.initAnimation(0, 0, 0, -80, 32);
-            for (uint8_t i = 0; i < 32; i++) {
+            for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
                 fillMidRectOfst(148, 20, 0x4208, Anim0.getAnimationX(), Anim0.getAnimationY());
                 drawMidRectOfst(148, 20, ST7735_WHITE, Anim0.getAnimationX(), Anim0.getAnimationY());
@@ -1141,32 +1154,35 @@ inline void fileOpt() {
                 frame.setTextColor(ST7735_WHITE);
                 frame.printf("THIS FILE IS TOO LARGE!");
                 frame.display();
+                printf("%d ANIM %d\n", i, Anim0.getAnimationY());
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
                 vTaskDelay(4);
             }
-            for (uint8_t i = 0; i < 32; i++) {
+            for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
                 fillMidRectOfst(148, 20, 0x4208, Anim1.getAnimationX(), Anim1.getAnimationY());
                 drawMidRectOfst(148, 20, ST7735_WHITE, Anim1.getAnimationX(), Anim1.getAnimationY());
                 setMidCusrOfst(148, 20, Anim1.getAnimationX()+7, Anim1.getAnimationY()+7);
                 // printf("GET ANIM(INT) %d %d %d\n", i, 148, 20);
                 frame.setTextColor(0x7bcf);
-                frame.printf("THIS IS NOT A MOD FILE!");
+                frame.printf("THIS FILE IS TOO LARGE!");
                 setMidCusrOfst(148, 20, Anim1.getAnimationX()+6, Anim1.getAnimationY()+6);
                 frame.setTextColor(ST7735_WHITE);
-                frame.printf("THIS IS NOT A MOD FILE!");
+                frame.printf("THIS FILE IS TOO LARGE!");
                 frame.display();
+                printf("%d ANIM %d\n", i, Anim1.getAnimationY());
                 Anim1.nextAnimation(8);
             }
             MainReDraw();
         } else {
             Animation Anim = Animation();
             Anim.initAnimation(0, 0, 0, 128, 32);
-            for (uint8_t i = 0; i < 32; i++) {
+            for (uint8_t i = 0; i < 30; i++) {
                 frame.fillScreen(ST7735_BLACK);
                 frame.drawRGBBitmap(0, Anim.getAnimationY(), snap, 160, 128);
+                // printf("%d ANIM %d\n", i, Anim.getAnimationY());
                 Anim.nextAnimation(9);
                 frame.display();
                 analogWrite(LCD_BK, 255-(i<<3));
@@ -1252,7 +1268,7 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t current_last
         }
         // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", menuAnim.startX, menuAnim.startY, menuAnim.endX, menuAnim.endY, menuAnim.getAnimationX(), menuAnim.getAnimationY());
         frame.fillRect(menuAnim.getAnimationX(), menuAnim.getAnimationY(), Xlen - 10, 11, 0x7bef);
-        menuAnim.nextAnimation(14);
+        menuAnim.nextAnimation(12);
     } else {
         frame.fillRect(frame.getCursorX()-2, (frame.getCursorY()-2)+((current_option-1)*11), Xlen - 10, 11, 0x7bef);
     }
@@ -1303,7 +1319,7 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
             frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), Xlen - 10, 11, 0x7bef);
             AnimMenu.nextAnimation(10);
             AnimStep++;
-            if (AnimStep >= 16) {
+            if (AnimStep > 14) {
                 CurChange = false;
                 AnimStep = 0;
             }
@@ -1513,7 +1529,7 @@ void MainPage() {
         for (int8_t i = -4; i < 5; i++) {
             if ((row_point+i < 64) && (row_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
-                frame.printf("%2d", row_point+i);
+                frame.printf(row_point+i < 10 ? "0%d" : "%d", row_point+i);
                 for (uint8_t chl = 0; chl < 4; chl++) {
                     read_part_data(tracker_data_pattern, part_table[part_point], row_point+i, chl, viewTmp);
                     showTmpNote = viewTmp[0];
@@ -1563,7 +1579,7 @@ void MainPage() {
             if (fileMenu) {
                 windowsMenu("FILE", fileMenu, fileMenu_last, 5, 80, AnimMenu, CurChange, animStep, "New", "Open", recMod ? "Recording..." : "Record", "Setting", "Close");
                 animStep++;
-                if (animStep > 16) {
+                if (animStep > 14) {
                     CurChange = false;
                     animStep = 0;
                 }
@@ -1687,7 +1703,7 @@ void MainPage() {
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
             windowsMenu(menuShow, ChlMenuPos, ChlMenuPos_last, 3, 90, AnimMenu, CurChange, animStep, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
             animStep++;
-            if (animStep > 16) {
+            if (animStep > 14) {
                 CurChange = false;
                 animStep = 0;
             }
@@ -1808,7 +1824,7 @@ void ChlEdit() {
         for (int8_t i = -7; i < 9; i++) {
             if ((row_point+i < 64) && (row_point+i >= 0)) {
                 frame.setTextColor(0xf7be);
-                frame.printf("%2d", row_point+i);
+                frame.printf(row_point+i < 10 ? "0%d" : "%d", row_point+i);
                 read_part_data(tracker_data_pattern, part_table[part_point], row_point+i, ChlPos-1, viewTmp);
                 
                 showTmpNote = viewTmp[0];
@@ -2068,8 +2084,8 @@ void filterSetting() {
 }
 
 void SampEdit() {
-    const uint8_t OPTION_NUM = 4;
-    const char *menuStr[OPTION_NUM] = {"New", "Load", "Info", "Close"};
+    const uint8_t OPTION_NUM = 6;
+    const char *menuStr[OPTION_NUM] = {"New", "Load", "Info", "Next", "Prev", "Close"};
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 8, 0x42d0);
@@ -2083,30 +2099,106 @@ void SampEdit() {
     Animation AnimMenu = Animation();
     frame.setCursor(0, 10);
     frame.printf("Sample Editer");
+    uint8_t show_num = 1;
+    bool refresh_data = true;
+    int8_t snap[117] = {0};
+    uint8_t showLoopStart = 0;
+    uint8_t showLoopEnd = 0;
     for (;;) {
-        frame.fillRect(0, 19, 160, 109, ST7735_BLACK);
-        frame.drawFastVLine(42, 19, 150, 0xffff);
-        frame.drawFastVLine(42, 19, 150, 0xf79e);
-        frame.drawFastHLine(42, 40, 117, 0xf79e);
+        frame.fillRect(0, 19, 160, 20, ST7735_BLACK);
+        frame.fillRect(0, 39, 42, 89, ST7735_BLACK);
+        frame.drawFastVLine(42, 28, 141, 0xf79e);
+        frame.drawFastHLine(0, 28, 160, 0x867f);
+        frame.drawFastHLine(42, 63, 118, 0xf79e);
+        frame.fillRect(0, 19, 160, 9, 0x2104);
 
-        frame.fillRect(43, 41, 116, 86, 0x8410);
+        if (refresh_data) {
+            refresh_data = false;
+
+            if (tracker_data_sample[show_num] != NULL) {
+                float showCount = wave_info[show_num][0] / 117.0f;
+
+                if (wave_info[show_num][0] > 255) {
+                    int16_t showFilter = 0;
+                    for (uint8_t i = 0; i < 117; i++) {
+                        showFilter += tracker_data_sample[show_num][(uint16_t)(i*showCount)-1]>>2;
+                        showFilter += tracker_data_sample[show_num][(uint16_t)(i*showCount)]>>2;
+                        showFilter += tracker_data_sample[show_num][(uint16_t)(i*showCount)+1]>>2;
+                        snap[i] = showFilter / 3;
+                        showFilter = 0;
+                    }
+                } else {
+                    for (uint8_t i = 0; i < 117; i++) {
+                        snap[i] = tracker_data_sample[show_num][(uint16_t)(i*showCount)]>>2;
+                    }
+                }
+            } else {
+                memset(snap, 0, 117);
+            }
+            if (wave_info[show_num][4] > 2) {
+                showLoopStart = (uint8_t)((wave_info[show_num][3]<<1) * (117.0f / wave_info[show_num][0]));
+                showLoopEnd = (uint8_t)(((wave_info[show_num][3]<<1) + (wave_info[show_num][4]<<1)) * (117.0f / wave_info[show_num][0]));
+                showLoopEnd = showLoopEnd > 116 ? 116 : showLoopEnd;
+            } else {
+                showLoopStart = showLoopEnd = 0;
+            }
+        }
+
+
+        frame.fillRect(43, 64, 117, 64, 0x4208);
+
+        if (wave_info[show_num][0] > 255) {
+            for (uint8_t x = 0; x < 117; x++) {
+                frame.drawFastVLine(43+x, 97, snap[x], 0xffdf);
+            }
+        } else {
+            for (uint8_t x = 0; x < 117; x++) {
+                frame.drawFastVLine(43+x, 97, snap[x], 0xffdf);
+            }
+        }
+
+        if (showLoopEnd) {
+            frame.drawFastVLine(43+showLoopStart, 64, 64, 0xfae8);
+            frame.drawFastVLine(43+showLoopEnd, 64, 64, 0x429f);
+        }
+
+        if (tracker_data_sample[show_num] != NULL) {
+            for (uint8_t chl = 0; chl < NUM_CHANNELS; chl++) {
+                if (smp_num[chl] == show_num) frame.drawFastVLine(43+(data_index[chl] * (117.0f / wave_info[smp_num[chl]][0])), 64, 64, 0xc618);
+            }
+        } else {
+            frame.setFont(NULL);
+            frame.setCursor(80, 82);
+            frame.setTextSize(2);
+            frame.setTextColor(0);
+            frame.print("NULL");
+            frame.setTextSize(1);
+            frame.setFont(&abcd);
+            frame.setTextColor(ST7735_WHITE);
+        }
+
+        frame.setCursor(40, 30);
+        printf("VOL %d   PAN %d", wave_info[show_num][1])
 
         frame.setCursor(0, 20);
+        frame.printf(show_num < 10 ? "0%d: %.16s" : "%d: %.16s", show_num, samp_name[show_num]);
+
+        frame.setCursor(0, 31);
         if (CurChange) {
             if (!AnimStep) {
-                AnimMenu.initAnimation(0, (optPos_last*10)+19, 0, (optPos*10)+19, 16);
+                AnimMenu.initAnimation(0, (optPos_last*10)+29, 0, (optPos*10)+29, 16);
                 printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
             }
             // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
-            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 42, 10, 0x528a);
-            AnimMenu.nextAnimation(10);
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 42, 11, 0x528a);
+            AnimMenu.nextAnimation(9);
             AnimStep++;
-            if (AnimStep >= 16) {
+            if (AnimStep > 14) {
                 CurChange = false;
                 AnimStep = 0;
             }
         } else {
-            frame.fillRect(0, (optPos*10)+19, 42, 10, 0x528a);
+            frame.fillRect(0, (optPos*10)+29, 42, 11, 0x528a);
         }
         for (uint8_t i = 0; i < OPTION_NUM; i++) {
             frame.printf("%s\n", menuStr[i]);
@@ -2116,8 +2208,13 @@ void SampEdit() {
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
-                MenuPos = 0;
-                break;
+                if (optPos == 3) {show_num++; if (show_num > 31) show_num = 1;}
+                if (optPos == 4) {show_num--; if (show_num < 1) show_num = 31;}
+                if (optPos == 5) {
+                    MenuPos = 0;
+                    break;
+                }
+                refresh_data = true;
             }
             switch (optionKeyEvent.num)
             {
@@ -2171,7 +2268,7 @@ void Setting() {
             frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 160, 11, 0x528a);
             AnimMenu.nextAnimation(10);
             AnimStep++;
-            if (AnimStep >= 16) {
+            if (AnimStep > 14) {
                 CurChange = false;
                 AnimStep = 0;
             }
@@ -2956,6 +3053,9 @@ void input(void *arg) {
             if (received == 50) {
                 TestNote = true;
             }
+            if (received == 102) {
+                printf("Current CPU frequency: %u Hz\n", esp_clk_cpu_freq());
+            }
             if (received == 107) {
                 vTaskPrioritySet(NULL, 5);
                 FileInfo* files = NULL;
@@ -2984,7 +3084,7 @@ void input(void *arg) {
 void setup()
 {
     pinMode(LCD_BK, OUTPUT);
-    // analogWriteFrequency(22050);
+    analogWriteFrequency(22050);
     analogWrite(LCD_BK, 0);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0); 
     tft.initR(INITR_BLACKTAB);

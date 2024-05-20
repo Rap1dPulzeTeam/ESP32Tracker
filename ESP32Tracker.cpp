@@ -47,7 +47,7 @@ int8_t *tracker_data_sample[33];
 uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
 void read_pattern_table(uint8_t head_data[1084]);
-void read_wave_info(uint8_t head_data[1084]);
+void read_samp_info(uint8_t head_data[1084]);
 // void comp_wave_ofst();
 #define CHL_NUM 4
 #define TRACKER_ROW 64
@@ -145,7 +145,6 @@ uint8_t part_table[128];
 int8_t part_point = 0;
 int8_t row_point = 0;
 char song_name[20];
-char samp_name[33][22];
 
 #define BASE_FREQ 8267
 bool dispRedy = false;
@@ -275,14 +274,15 @@ int find_max(int size) {
 }
 
 typedef struct {
+    char name[22];
     uint16_t len;
-    uint8_t pan;
+    uint8_t finetune;
     uint8_t vol;
     uint16_t loopStart;
-    uint16_t loopEnd;
-} samp_info;
+    uint16_t loopLen;
+} samp_info_t;
 
-samp_info wave_info[33];
+samp_info_t samp_info[33];
 uint32_t wav_ofst[34];
 
 bool mute[4] = {false, false, false, false};
@@ -383,7 +383,7 @@ int8_t read_tracker_file(const char* path) {
     }
 
     read_pattern_table(tracker_data_header);
-    read_wave_info(tracker_data_header);
+    read_samp_info(tracker_data_header);
     pat_max = find_max(NUM_PATTERNS) + 1;
     tracker_data_pattern = (uint8_t**)malloc(pat_max * sizeof(uint8_t*));
     if (!tracker_data_pattern) {
@@ -408,10 +408,10 @@ int8_t read_tracker_file(const char* path) {
     }
 
     printf("PAT NOW FILE POS %ld\n", ftell(file));
-    for (uint8_t i = 0; i < 32; i++) {
-        if (wave_info[i + 1][0]) {
-            tracker_data_sample[i + 1] = (int8_t*)malloc(wave_info[i + 1][0]);
-            if (!tracker_data_sample[i + 1]) {
+    for (uint8_t i = 1; i < 33; i++) {
+        if (samp_info[i].len) {
+            tracker_data_sample[i] = (int8_t*)malloc(samp_info[i].len << 1);
+            if (!tracker_data_sample[i]) {
                 printf("READ SAMPLE MALLOC FAIL! EXITING...\n");
                 for (uint8_t j = 0; j < pat_max; j++) {
                     free(tracker_data_pattern[j]);
@@ -423,8 +423,8 @@ int8_t read_tracker_file(const char* path) {
                 fclose(file);
                 return -2;
             }
-            fread(tracker_data_sample[i + 1], 1, wave_info[i + 1][0], file);
-            printf("READ SMP #%d SIZE: %d STATUS %p\n", i + 1, wave_info[i + 1][0], tracker_data_sample[i + 1]);
+            fread(tracker_data_sample[i], 2, samp_info[i].len, file);
+            printf("READ SMP #%d SIZE: %d STATUS %p\n", i + 1, samp_info[i].len<<1, tracker_data_sample[i]);
         }
     }
 
@@ -466,7 +466,7 @@ bool new_tracker_file() {
         tracker_data_header[p] = tracker_null[p];
     }
     read_pattern_table(tracker_data_header);
-    read_wave_info(tracker_data_header);
+    read_samp_info(tracker_data_header);
     pat_max = find_max(NUM_PATTERNS)+1;
     tracker_data_pattern = (uint8_t**)malloc(pat_max*sizeof(uint8_t*));
     for (uint8_t i = 0; i < pat_max; i++) {
@@ -607,10 +607,10 @@ void display(void *arg) {
                 sprintf(ten, " %2d %2d>%2d %d", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
                 // sprintf(ten, "%d   %d   %d   %d   %d   %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
                 // sprintf(one, "%3d %3d %3d %3d %3d %3d\n", sigBase[0], sigBase[1], sigBase[2], sigBase[3], sigBase[4], sigBase[5]);
-                addr[0] = (uint8_t)(data_index[0] * (32.0f / wave_info[smp_num[0]][0])) & 31;
-                addr[1] = (uint8_t)(data_index[1] * (32.0f / wave_info[smp_num[1]][0])) & 31;
-                addr[2] = (uint8_t)(data_index[2] * (32.0f / wave_info[smp_num[2]][0])) & 31;
-                addr[3] = (uint8_t)(data_index[3] * (32.0f / wave_info[smp_num[3]][0])) & 31;
+                addr[0] = (uint8_t)(data_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
+                addr[1] = (uint8_t)(data_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
+                addr[2] = (uint8_t)(data_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
+                addr[3] = (uint8_t)(data_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
                 // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
                 ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
                 ssd1306_display_text(&dev, 6, ten, 16, false);
@@ -1205,7 +1205,7 @@ void loadFileInit() {
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
     fileOpt();
     read_pattern_table(tracker_data_header);
-    read_wave_info(tracker_data_header);
+    read_samp_info(tracker_data_header);
     windowsClose = true;
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -1225,7 +1225,7 @@ void newFileInit() {
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
     new_tracker_file();
     read_pattern_table(tracker_data_header);
-    read_wave_info(tracker_data_header);
+    read_samp_info(tracker_data_header);
     windowsClose = true;
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -1779,7 +1779,7 @@ void ChlEdit() {
         frame.setCursor(0, 49);
         frame.printf("VOLE:%d\nPROD:%d\nFREQ:%.1f\n", vol[ChlPos-1], period[ChlPos-1], frq[ChlPos-1]);
         frame.setTextColor(0x8410);
-        frame.printf("SAMP INFO\nNAME:\n%s\nNUM: %d\nLEN: %d\nPAT: %d\nVOL: %d", samp_name[smp_num[ChlPos-1]], smp_num[ChlPos-1], wave_info[smp_num[ChlPos-1]][0], wave_info[smp_num[ChlPos-1]][1], wave_info[smp_num[ChlPos-1]][2]);
+        frame.printf("SAMP INFO\nNAME:\n%s\nNUM: %d\nLEN: %d\nFTV: %d\nVOL: %d", samp_info[smp_num[ChlPos-1]].name, smp_num[ChlPos-1], samp_info[smp_num[ChlPos-1]].len<<1, samp_info[smp_num[ChlPos-1]].finetune, samp_info[smp_num[ChlPos-1]].vol);
 
         vTaskDelay(2);
 
@@ -2116,9 +2116,9 @@ void SampEdit() {
             refresh_data = false;
 
             if (tracker_data_sample[show_num] != NULL) {
-                float showCount = wave_info[show_num][0] / 117.0f;
+                float showCount = samp_info[show_num].len / 58.5f;
 
-                if (wave_info[show_num][0] > 255) {
+                if (samp_info[show_num].len > 255) {
                     int16_t showFilter = 0;
                     for (uint8_t i = 0; i < 117; i++) {
                         showFilter += tracker_data_sample[show_num][(uint16_t)(i*showCount)-1]>>2;
@@ -2135,9 +2135,9 @@ void SampEdit() {
             } else {
                 memset(snap, 0, 117);
             }
-            if (wave_info[show_num][4] > 2) {
-                showLoopStart = (uint8_t)((wave_info[show_num][3]<<1) * (117.0f / wave_info[show_num][0]));
-                showLoopEnd = (uint8_t)(((wave_info[show_num][3]<<1) + (wave_info[show_num][4]<<1)) * (117.0f / wave_info[show_num][0]));
+            if (samp_info[show_num].loopLen > 1) {
+                showLoopStart = (uint8_t)((samp_info[show_num].loopStart<<1) * (58.5f / samp_info[show_num].len));
+                showLoopEnd = (uint8_t)(((samp_info[show_num].loopStart<<1) + (samp_info[show_num].loopLen<<1)) * (58.5f / samp_info[show_num].len));
                 showLoopEnd = showLoopEnd > 116 ? 116 : showLoopEnd;
             } else {
                 showLoopStart = showLoopEnd = 0;
@@ -2147,7 +2147,7 @@ void SampEdit() {
 
         frame.fillRect(43, 64, 117, 64, 0x4208);
 
-        if (wave_info[show_num][0] > 255) {
+        if (samp_info[show_num].len > 255) {
             for (uint8_t x = 0; x < 117; x++) {
                 frame.drawFastVLine(43+x, 97, snap[x], 0xffdf);
             }
@@ -2164,7 +2164,7 @@ void SampEdit() {
 
         if (tracker_data_sample[show_num] != NULL) {
             for (uint8_t chl = 0; chl < NUM_CHANNELS; chl++) {
-                if (smp_num[chl] == show_num) frame.drawFastVLine(43+(data_index[chl] * (117.0f / wave_info[smp_num[chl]][0])), 64, 64, 0xc618);
+                if (smp_num[chl] == show_num) frame.drawFastVLine(43+(data_index[chl] * (58.5f / samp_info[smp_num[chl]].len)), 64, 64, 0xc618);
             }
         } else {
             frame.setFont(NULL);
@@ -2178,10 +2178,10 @@ void SampEdit() {
         }
 
         frame.setCursor(40, 30);
-        printf("VOL %d   PAN %d", wave_info[show_num][1])
+        frame.printf("VOL %d  FTV %d", samp_info[show_num].vol, samp_info[show_num].vol, samp_info[show_num].finetune);
 
         frame.setCursor(0, 20);
-        frame.printf(show_num < 10 ? "0%d: %.16s" : "%d: %.16s", show_num, samp_name[show_num]);
+        frame.printf(show_num < 10 ? "0%d: %.16s" : "%d: %.16s", show_num, samp_info[show_num].name);
 
         frame.setCursor(0, 31);
         if (CurChange) {
@@ -2338,7 +2338,7 @@ void display_lcd(void *arg) {
     MainReDraw();
     MenuPos = 0;
     read_pattern_table(tracker_data_header);
-    read_wave_info(tracker_data_header);
+    read_samp_info(tracker_data_header);
     part_point = 0;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
     vTaskDelay(16);
@@ -2435,10 +2435,10 @@ void comp(void *arg) {
             // buffer = realloc(buffer, TICK_NUL * sizeof(audio16BitStro));
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
-                    if (wave_info[smp_num[chl]][4] > 2) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, wave_info[smp_num[chl]][3]<<1, wave_info[smp_num[chl]][4]<<1, smp_num[chl], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
+                    if (samp_info[smp_num[chl]].loopLen > 1) {
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1, enbLine, enbCos, enbCubic);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], wave_info[smp_num[chl]][0], enbLine, enbCos, enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, enbLine, enbCos, enbCubic);
                     }
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
@@ -2533,7 +2533,7 @@ void comp(void *arg) {
 
                             if (part_buffer[1]) {
                                 smp_num[chl] = part_buffer[1];
-                                vol[chl] = wave_info[smp_num[chl]][2];
+                                vol[chl] = samp_info[smp_num[chl]].vol;
                                 lastVol[chl] = vol[chl];
                             }
 
@@ -2563,7 +2563,7 @@ void comp(void *arg) {
                                 }
                                 if (!(part_buffer[2] == 12) 
                                     && part_buffer[1]) {
-                                    vol[chl] = wave_info[smp_num[chl]][2];
+                                    vol[chl] = samp_info[smp_num[chl]].vol;
                                     lastVol[chl] = vol[chl];
                                 }
                                 if (part_buffer[1]) {
@@ -2696,7 +2696,7 @@ void comp(void *arg) {
                                 arpNote[0][chl] = hexToDecimalTens(part_buffer[3]);
                                 arpNote[1][chl] = hexToDecimalOnes(part_buffer[3]);
 
-                                arpFreq[0][chl] = patch_table[wave_info[smp_num[chl]][1]] / period[chl];
+                                arpFreq[0][chl] = patch_table[samp_info[smp_num[chl]].finetune] / period[chl];
                                 arpFreq[1][chl] = freq_up(arpFreq[0][chl], arpNote[0][chl]);
                                 arpFreq[2][chl] = freq_up(arpFreq[0][chl], arpNote[1][chl]);
                                 // printf("ARP CTRL %d %d %f %f %f\n", arpNote[0][chl], arpNote[1][chl], arpFreq[0][chl], arpFreq[1][chl], arpFreq[2][chl]);
@@ -2749,7 +2749,7 @@ void comp(void *arg) {
                     }
                     for (chl = 0; chl < 4; chl++) {
                         if (period[chl] != 0) {
-                            frq[chl] = patch_table[wave_info[smp_num[chl]][1]] / (float)(period[chl] + VibratoItem[chl]);
+                            frq[chl] = patch_table[samp_info[smp_num[chl]].finetune] / (float)(period[chl] + VibratoItem[chl]);
                         } else {
                             frq[chl] = 0;
                         }
@@ -2797,10 +2797,10 @@ void comp(void *arg) {
         } else {
             if (!view_mode) {
                 for (uint16_t i = 0; i < BUFF_SIZE; i++) {
-                    if (wave_info[smp_num[0]][4] > 2) {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, wave_info[smp_num[0]][3]<<1, wave_info[smp_num[0]][4]<<1, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false, false, false);
+                    if (samp_info[smp_num[0]].loopLen > 1) {
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
                     } else {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], wave_info[smp_num[0]][0], false, false, false);
+                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
                     }
                     buffer16BitStro[i].dataL = (int16_t)
                             (buffer_ch[chlMap[0]][i]
@@ -2853,7 +2853,7 @@ void comp(void *arg) {
             }
             // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
             if (!view_mode) {
-                frq[0] = patch_table[wave_info[smp_num[0]][1]] / period[0];
+                frq[0] = patch_table[samp_info[smp_num[0]].finetune] / period[0];
                 // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
                 if (audio_master_write(buffer, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
                 vTaskDelay(4);
@@ -2881,18 +2881,24 @@ void read_pattern_table(uint8_t head_data[1084]) {
     printf("\n");
 }
 
-void read_wave_info(uint8_t head_data[1084]) {
+void read_samp_info(uint8_t head_data[1084]) {
     for (uint8_t i = 1; i < 33; i++) {
         uint8_t* sample_data = (uint8_t*)head_data + 20 + (i - 1) * 30;
-        for (uint8_t p = 0; p < 22; p++) {
-            samp_name[i][p] = sample_data[p];
-        }
-        wave_info[i][0] = ((sample_data[22] << 8) | sample_data[23]) * 2;  // 采样长度
-        wave_info[i][1] = sample_data[24];  // 微调值
-        wave_info[i][2] = sample_data[25];  // 音量
-        wave_info[i][3] = (sample_data[26] << 8) | sample_data[27];  // 重复点
-        wave_info[i][4] = (sample_data[28] << 8) | sample_data[29];  // 重复长度
+        memcpy(samp_info[i].name, sample_data, 22);
+        
+        samp_info[i].len = (sample_data[22] << 8) | sample_data[23];  // 采样长度
+        samp_info[i].finetune = sample_data[24];  // 微调值
+        samp_info[i].vol = sample_data[25];  // 音量
+        samp_info[i].loopStart = (sample_data[26] << 8) | sample_data[27];  // 重复点
+        samp_info[i].loopLen = (sample_data[28] << 8) | sample_data[29];  // 重复长度
         // ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3], wave_info[i][4], find_max(NUM_PATTERNS)+1);
+    }
+}
+
+void write_samp_info(uint8_t head_data[1084]) {
+    for (uint8_t i = 1; i < 33; i++) {
+        uint8_t* sample_data = head_data + 20 + (i - 1) * 30;
+        memcpy(sample_data, &samp_info[i], sizeof(samp_info_t));
     }
 }
 
@@ -3044,7 +3050,7 @@ void input(void *arg) {
                     if (Serial.available() > 0) {
                         uint16_t received = Serial.read();
                         smp_num[0] = received - 48;
-                        printf("CHL0's SMP_NUM=%d NAME:%s\n", smp_num[0], samp_name[smp_num[0]]);
+                        printf("CHL0's SMP_NUM=%d NAME:%s\n", smp_num[0], samp_info[smp_num[0]].name);
                         break;
                     }
                     vTaskDelay(8);

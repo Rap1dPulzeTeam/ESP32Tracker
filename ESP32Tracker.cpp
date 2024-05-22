@@ -9,7 +9,6 @@
 #include <freertos/queue.h>
 // #include <pwm_audio.h>
 #include "pwm_audio.h"
-#include <driver/gpio.h>
 #include <math.h>
 #include <esp_log.h>
 #include "ssd1306.h"
@@ -24,6 +23,7 @@
 #include "NULL_MOD.h"
 #include "driver/i2s.h"
 #include "driver/gpio.h"
+#include "driver/temp_sensor.h"
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -127,7 +127,7 @@ class aFrameBuffer : public Adafruit_GFX {
 
 aFrameBuffer frame(160, 128);
 
-#define SMP_RATE 44100
+#define SMP_RATE 48000
 #define SMP_BIT 8
 float *buffer_ch[NUM_CHANNELS];
 void* buffer;
@@ -1277,7 +1277,7 @@ void windowsMenu(const char *title, uint8_t current_option, uint8_t current_last
         frame.printf("%s\n", va_arg(args, const char *));
         frame.setCursor(CXTmp, frame.getCursorY()+3);
     }
-
+    va_end(args);
     frame.setCursor(OriginX, OriginY);
 }
 
@@ -1297,6 +1297,7 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
     bool CurChange = false;
     uint8_t AnimStep = 0;
     Animation AnimMenu = Animation();
+    va_end(args);
     for (;;) {
         fillMidRect(Xlen, Ylen, 0x4208);
         drawMidRect(Xlen, Ylen, ST7735_WHITE);
@@ -1621,7 +1622,7 @@ void MainPage() {
                             // memset(buffer, 0, 6892 * sizeof(int16_t));
                             char *export_wave_name = (char*)malloc(strlen(song_name)+32);
                             sprintf(export_wave_name, "/sdcard/%s_record.wav", song_name);
-                            export_wav_file = wav_audio_start(export_wave_name, 44100, 16, 2);
+                            export_wav_file = wav_audio_start(export_wave_name, SMP_RATE, 16, 2);
                             vTaskDelay(8);
                             free(export_wave_name);
                             playStat = true;
@@ -2015,7 +2016,7 @@ void wav_player() {
     fclose(wave_file);
     vTaskDelay(16);
     i2s_zero_dma_buffer(I2S_NUM_0);
-    i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
+    i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     MenuPos = 0;
     view_mode = false;
     vTaskDelay(64);
@@ -2105,8 +2106,8 @@ void SampEdit() {
     uint8_t showLoopStart = 0;
     uint8_t showLoopEnd = 0;
     for (;;) {
-        frame.fillRect(0, 19, 160, 20, ST7735_BLACK);
-        frame.fillRect(0, 39, 42, 89, ST7735_BLACK);
+        frame.fillRect(0, 19, 160, 44, ST7735_BLACK);
+        frame.fillRect(0, 63, 42, 65, ST7735_BLACK);
         frame.drawFastVLine(42, 28, 141, 0xf79e);
         frame.drawFastHLine(0, 28, 160, 0x867f);
         frame.drawFastHLine(42, 63, 118, 0xf79e);
@@ -2177,8 +2178,17 @@ void SampEdit() {
             frame.setTextColor(ST7735_WHITE);
         }
 
-        frame.setCursor(40, 30);
-        frame.printf("VOL %d  FTV %d", samp_info[show_num].vol, samp_info[show_num].vol, samp_info[show_num].finetune);
+        frame.setCursor(44, 30);
+        frame.printf("VOL:%2d FTV:%2d", samp_info[show_num].vol, samp_info[show_num].finetune);
+        frame.drawFastHLine(43, 38, 117, 0xf79e);
+        frame.setCursor(44, 40);
+        frame.printf(samp_info[show_num].loopLen > 1 ? "LOOP: START   END" : "LOOP: DISABLE");
+        frame.drawFastHLine(43, 48, 117, 0xa514);
+        if (samp_info[show_num].loopLen > 1) {
+            frame.setCursor(80, 50);
+            frame.printf("%-6d %-6d", samp_info[show_num].loopStart<<1, (samp_info[show_num].loopLen+samp_info[show_num].loopStart)<<1);
+            frame.drawFastVLine(119, 39, 24, 0xa514);
+        }
 
         frame.setCursor(0, 20);
         frame.printf(show_num < 10 ? "0%d: %.16s" : "%d: %.16s", show_num, samp_info[show_num].name);
@@ -2891,14 +2901,25 @@ void read_samp_info(uint8_t head_data[1084]) {
         samp_info[i].vol = sample_data[25];  // 音量
         samp_info[i].loopStart = (sample_data[26] << 8) | sample_data[27];  // 重复点
         samp_info[i].loopLen = (sample_data[28] << 8) | sample_data[29];  // 重复长度
-        // ESP_LOGI("WAVE INFO", "NUM=%d LEN=%d PAT=%d VOL=%d LOOPSTART=%d LOOPLEN=%d TRK_MAX=%d", i, wave_info[i][0], wave_info[i][1], wave_info[i][2], wave_info[i][3], wave_info[i][4], find_max(NUM_PATTERNS)+1);
     }
 }
 
 void write_samp_info(uint8_t head_data[1084]) {
     for (uint8_t i = 1; i < 33; i++) {
-        uint8_t* sample_data = head_data + 20 + (i - 1) * 30;
-        memcpy(sample_data, &samp_info[i], sizeof(samp_info_t));
+        uint8_t* sample_data = (uint8_t*)head_data + 20 + (i - 1) * 30;
+        memcpy(sample_data, samp_info[i].name, 22);  // 写入采样名
+        
+        sample_data[22] = (uint8_t)(samp_info[i].len >> 8);
+        sample_data[23] = (uint8_t)(samp_info[i].len & 0xFF);  // 写入采样长度的低字节
+        
+        sample_data[24] = samp_info[i].finetune;  // 写入微调值
+        sample_data[25] = samp_info[i].vol;  // 写入音量
+        
+        sample_data[26] = (uint8_t)(samp_info[i].loopStart >> 8);  // 写入重复点的高字节
+        sample_data[27] = (uint8_t)(samp_info[i].loopStart & 0xFF);  // 写入重复点的低字节
+        
+        sample_data[28] = (uint8_t)(samp_info[i].loopLen >> 8);  // 写入重复长度的高字节
+        sample_data[29] = (uint8_t)(samp_info[i].loopLen & 0xFF);  // 写入重复长度的低字节
     }
 }
 
@@ -2966,6 +2987,12 @@ void input(void *arg) {
     bool fnA = false;
     bool fnB = false;
     bool fnC = false;
+    temp_sensor_config_t temp_sensor = {
+        .dac_offset = TSENS_DAC_L2,
+        .clk_div = 6,
+    };
+    temp_sensor_set_config(temp_sensor);
+    temp_sensor_start();
     while (true) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
@@ -3061,6 +3088,9 @@ void input(void *arg) {
             }
             if (received == 102) {
                 printf("Current CPU frequency: %u Hz\n", esp_clk_cpu_freq());
+            }
+            if (received == 116) {
+                printf("CPU Core Temp: %.1f °C\n", temperatureRead());
             }
             if (received == 107) {
                 vTaskPrioritySet(NULL, 5);
@@ -3167,7 +3197,7 @@ void setup()
     static const int i2s_num = 0; // i2s port number
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-        .sample_rate = 44100,
+        .sample_rate = SMP_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
@@ -3188,7 +3218,7 @@ void setup()
 
     printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
     printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
-    i2s_set_clk(I2S_NUM_0, 44100, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
+    i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
     vTaskDelay(256);

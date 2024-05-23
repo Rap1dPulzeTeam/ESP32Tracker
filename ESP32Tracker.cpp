@@ -132,9 +132,6 @@ aFrameBuffer frame(160, 128);
 float *buffer_ch[NUM_CHANNELS];
 void* buffer;
 float time_step = 1.0 / SMP_RATE;
-bool enbLine = false;
-bool enbCos = false;
-bool enbCubic = false;
 int8_t vol[CHL_NUM] = {0, 0, 0, 0};
 
 size_t wrin;
@@ -146,8 +143,9 @@ int8_t part_point = 0;
 int8_t row_point = 0;
 char song_name[20];
 
-#define BASE_FREQ 8267
 bool dispRedy = false;
+bool dispReadConfigStatus = false;
+bool dispSdcardError = false;
 bool playStat = false;
 uint32_t wave_MAX_L = 0;
 uint32_t wave_MAX_R = 0;
@@ -155,10 +153,56 @@ uint32_t wave_MAX_L_OUT = 0;
 uint32_t wave_MAX_R_OUT = 0;
 bool MAX_COMP_FINISH = false;
 
-bool enbFltr[4] = {false, false, false, false};
-bool enbDelay[4] = {false, false, false, false};
+#define CONFIG_FILE_PATH "/spiffs/esp32tracker.config"
 
-float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
+typedef struct {
+    bool enbLine;
+    bool enbCos;
+    bool enbCubic;
+    bool enbFltr[4];
+    bool enbDelay[4];
+    float cutOffFreq[4];
+} Config_t;
+
+Config_t config;
+
+bool readConfig(Config_t *config) {
+    FILE *file = fopen(CONFIG_FILE_PATH, "rb");
+    if (file == NULL) {
+        printf("Failed to open config file for reading\n");
+        return false;
+    }
+
+    size_t readSize = fread(config, sizeof(Config_t), 1, file);
+    fclose(file);
+
+    if (readSize != 1) {
+        printf("Failed to read config file\n");
+        return false;
+    }
+
+    printf("Config file read successfully\n");
+    return true;
+}
+
+bool writeConfig(const Config_t *config) {
+    FILE *file = fopen(CONFIG_FILE_PATH, "wb");
+    if (file == NULL) {
+        printf("Failed to open config file for writing\n");
+        return false;
+    }
+
+    size_t writeSize = fwrite(config, sizeof(Config_t), 1, file);
+    fclose(file);
+
+    if (writeSize != 1) {
+        printf("Failed to write config file\n");
+        return false;
+    }
+
+    printf("Config file written successfully\n");
+    return true;
+}
 
 const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.9175884672f, 3624501.595143772f, 3650766.227807657f, 3677221.184826728f, 3703867.8453697185f, 3730707.5985993897f,
                          3347767.391694687f, 3372026.6942439806f, 3396461.7896998064f, 3421073.9519300302f, 3445864.464033491f, 3470834.61840689f, 3495985.7168121682f, 3521319.0704443706f};
@@ -570,16 +614,21 @@ void display(void *arg) {
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
-    ssd1306_display_text(&dev, 0, (char *)"Welcome to", 11, false);
-    ssd1306_display_text(&dev, 1, (char *)"ESP32Tracker", 13, false);
-    ssd1306_display_text(&dev, 2, (char *)"BOOTING....", 12, false);
+    ssd1306_display_text(&dev, 0, "Welcome to", 11, false);
+    ssd1306_display_text(&dev, 1, "ESP32Tracker", 13, false);
+    ssd1306_display_text(&dev, 2, "BOOTING....", 12, false);
     vTaskDelay(32);
     for (;;) {
         vTaskDelay(32);
-        if (dispRedy) {
-            break;
-        }
+        if (dispRedy) break;
     }
+    ssd1306_display_text(&dev, 3, "READ CONFIG....", 16, false);
+    for (;;) {
+        vTaskDelay(32);
+        if (dispSdcardError) ssd1306_display_text(&dev, 4, "SDCARD ERROR!!!", 16, false);
+        if (dispReadConfigStatus) break;
+    }
+    vTaskDelay(32);
     for (;;) {
         uint8_t x;
         uint8_t volTemp;
@@ -733,7 +782,7 @@ int8_t lastVol[4];
 float sin_index;
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
     if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
-        if (enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
+        if (config.enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
         else return 0;
     }
 
@@ -798,10 +847,10 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
         result = sample1;
     }
 
-    if (enbFltr[chl]) {
-        result = lowPassFilterSingleSample(result, chl, cutOffFreq[chl], SMP_RATE);
+    if (config.enbFltr[chl]) {
+        result = lowPassFilterSingleSample(result, chl, config.cutOffFreq[chl], SMP_RATE);
     }
-    if (enbDelay[chl]) {
+    if (config.enbDelay[chl]) {
         result = audioDelay(result, 2048, 0.23f, 0.8f, 0.2f, chl);
     }
 
@@ -2049,9 +2098,9 @@ void filterSetting() {
         frame.setTextSize(0);
         frame.setCursor(52, 31);
         for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
-            frame.printf("STATUS: %s\n", enbFltr[i] ? "ON" : "OFF");
+            frame.printf("STATUS: %s\n", config.enbFltr[i] ? "ON" : "OFF");
             frame.setCursor(52, frame.getCursorY());
-            frame.printf("CUTOFF: %.1fHz\n", cutOffFreq[i]);
+            frame.printf("CUTOFF: %.1fHz\n", config.cutOffFreq[i]);
             frame.setCursor(52, frame.getCursorY()+10);
         }
         frame.display();
@@ -2069,15 +2118,15 @@ void filterSetting() {
                 break;
             
             case KEY_UP:
-                cutOffFreq[fltrPos]+=500;
+                config.cutOffFreq[fltrPos]+=500;
                 break;
 
             case KEY_DOWN:
-                cutOffFreq[fltrPos]-=500;
+                config.cutOffFreq[fltrPos]-=500;
                 break;
             
             case KEY_OK:
-                enbFltr[fltrPos] = !enbFltr[fltrPos];
+                config.enbFltr[fltrPos] = !config.enbFltr[fltrPos];
                 break;
             }
         }
@@ -2279,10 +2328,10 @@ void Setting() {
     bool CurChange = true;
     uint8_t AnimStep = 0;
 
-    const uint8_t SETTING_NUM = 4;
+    const uint8_t SETTING_NUM = 5;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "Close"};
     uint8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2322,32 +2371,33 @@ void Setting() {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
                 if (optPos == 0) {
-                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 4, enbCubic ? 3 : (enbCos ? 2 : (enbLine ? 1 : (!enbCos && !enbLine && !enbCubic ? 4 : -1))), 90, "Linear", "Cosine", "Cubic Spline", "OFF");
+                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 4, config.enbCubic ? 3 : (config.enbCos ? 2 : (config.enbLine ? 1 : (!config.enbCos && !config.enbLine && !config.enbCubic ? 4 : -1))), 90, "Linear", "Cosine", "Cubic Spline", "OFF");
                     switch (menuRtrn)
                     {
                     case 0:
-                        enbLine = true;
-                        enbCubic = enbCos = false;
+                        config.enbLine = true;
+                        config.enbCubic = config.enbCos = false;
                         break;
                     
                     case 1:
-                        enbCos = true;
-                        enbCubic = enbLine = false;
+                        config.enbCos = true;
+                        config.enbCubic = config.enbLine = false;
                         break;
 
                     case 2:
-                        enbCubic = true;
-                        enbCos = enbLine = false;
+                        config.enbCubic = true;
+                        config.enbCos = config.enbLine = false;
                         break;
 
                     case 3:
-                        enbCubic = enbCos = enbLine = false;
+                        config.enbCubic = config.enbCos = config.enbLine = false;
                         break;
                     }
                     printf("MENU RETURN %d\n", menuRtrn);
                 }
                 if (optPos == 1) {MenuPos = 4; break;}
                 if (optPos == 2) wav_player();
+                if (optPos == 3) {writeConfig(&config);}
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
             switch (optionKeyEvent.num)
@@ -2410,6 +2460,42 @@ void display_lcd(void *arg) {
 }
 bool TestNote = false;
 uint8_t chlMap[CHL_NUM] = {/*L*/0, 3, /*R*/1, 2};
+
+const int8_t channel_type[8] = {0, 0, 0, 0, 1, 1, 1, 1}; // 0: SAMPLER, 1: SYNTH, 2: UART OUT
+
+void triggerSamplePlayback(int16_t period_input, uint8_t velocity, uint8_t channel, uint16_t sampOfst) {
+    if (sampOfst) data_index[channel] = sampOfst;
+    else data_index[channel] = 0;
+
+    vol[channel] = velocity;
+    period[channel] = period_input;
+    // printf("Triggering sample on channel %d with period %d, volume %d\n", channel, period[channel], vol[channel]);
+}
+
+void triggerSynthesizer(uint8_t note, uint8_t velocity, uint8_t channel, uint16_t option) {
+    printf("Triggering synthesizer for note %d on channel %d with velocity %d\n", note, channel, velocity);
+}
+
+void triggerUartNote(uint8_t note, uint8_t velocity, uint8_t channel, uint16_t option) {
+    printf("Triggering new type for note %d on channel %d with velocity %d\n", note, channel, velocity);
+}
+
+void triggerNote(int16_t period, uint8_t velocity, uint8_t channel, uint16_t options) {
+    switch (channel_type[channel]) {
+        case 0:
+            triggerSamplePlayback(period, velocity, channel, options);
+            break;
+        case 1:
+            triggerSynthesizer(period, velocity, channel, options);
+            break;
+        case 2:
+            triggerUartNote(period, velocity, channel, options);
+            break;
+        default:
+            printf("Unknown channel type for channel %d [%d]\n", channel, channel_type[channel]);
+    }
+}
+
 // COMP TASK START ----------------------------------------------
 void comp(void *arg) {
     uint8_t tick_time = 0;
@@ -2462,7 +2548,7 @@ void comp(void *arg) {
     int8_t cutTick[4] = {0};
     int8_t skipToRow = 0;
     uint16_t buffPtr = 0;
-    dispRedy = true;
+    dispReadConfigStatus = true;
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -2474,9 +2560,9 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < 4; chl++) {
                     if (samp_info[smp_num[chl]].loopLen > 1) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1, enbLine, enbCos, enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, enbLine, enbCos, enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
                     }
                 }
                 buffer16BitStro[buffPtr].dataL = (int16_t)
@@ -2593,11 +2679,9 @@ void comp(void *arg) {
                                         portToneSpeed[chl] = part_buffer[3];
                                     }
                                 } else {
-                                    data_index[chl] = 0;
                                     lastNote[chl] = part_buffer[0];
-                                    period[chl] = lastNote[chl];
-                                    vol[chl] = lastVol[chl];
                                     enbPortTone[chl] = false;
+                                    triggerNote(lastNote[chl], lastVol[chl], chl, 0);
                                 }
                                 if (!(part_buffer[2] == 12) 
                                     && part_buffer[1]) {
@@ -2796,8 +2880,7 @@ void comp(void *arg) {
                             // if (RetriggerPos[chl] > RetriggerConfig[chl]) {
                             if (!(tick_time % RetriggerConfig[chl])) {
                                 // printf("EXEC RET %d\n", RetriggerPos[chl]);
-                                data_index[chl] = 0;
-                                vol[chl] = volTemp[chl];
+                                triggerNote(period[chl], volTemp[chl], chl, 0);
                             }
                         }
                         if (OfstCfg[chl]) {
@@ -2902,7 +2985,6 @@ void comp(void *arg) {
     }
 }
 // COMP TASK END ------------------------------------------------
-FILE *f;
 
 void read_pattern_table(uint8_t head_data[1084]) {
     for (uint8_t i = 0; i < 128; i++) {
@@ -2951,7 +3033,6 @@ void write_samp_info(uint8_t head_data[1084]) {
     }
 }
 
-#define TAG "TAG"
 const char* root_path = "/spiffs";
 
 void rotate(ESPRotary& rotary) {
@@ -3160,10 +3241,11 @@ void setup()
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     // initDelayBuffer();
+    dispRedy = true;
     esp_err_t ret;
-    esp_vfs_spiffs_conf_t conf = {
+    esp_vfs_spiffs_conf_t spiffs_conf = {
         .base_path = "/spiffs",
-        .partition_label = "ffat",
+        .partition_label = "spiffs",
         .max_files = 2,
         .format_if_mount_failed = true
     };
@@ -3172,8 +3254,28 @@ void setup()
         .max_files = 2,
         .allocation_unit_size = 8 * 1024
     };
+
+    ret = esp_vfs_spiffs_register(&spiffs_conf);
+    if (ret == ESP_OK) {
+        printf("SPIFFS mounted!\n");
+    } else {
+        printf("SPIFFS ERROR! NOW FORMAT! PLEASE WAIT...\n");
+    }
+
+    if (!readConfig(&config)) {
+        printf("Using default configuration\n");
+        config = (Config_t){
+            .enbLine = true,
+            .enbCos = false,
+            .enbCubic = false,
+            .enbFltr = {false, false, false, false},
+            .enbDelay = {false, false, false, false},
+            .cutOffFreq = {0.0f, 0.0f, 0.0f, 0.0f}
+        };
+        writeConfig(&config);
+    }
+
     sdmmc_card_t *card;
-    const char mount_point[] = "/sdcard";
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 1;
@@ -3183,8 +3285,9 @@ void setup()
     slot_config.d0 = GPIO_NUM_45;
     key_event_t optionKeyEvent;
     xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
-    ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+    ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
     while (ret != ESP_OK) {
+        dispSdcardError = true;
         analogWrite(LCD_BK, 255);
         MainReDraw();
         fillMidRect(151, 34, 0x4208);
@@ -3208,7 +3311,7 @@ void setup()
         if (readOptionKeyEvent == pdTRUE) {
             MainReDraw();
             frame.display();
-            ret = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot_config, &mount_config, &card);
+            ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
             vTaskDelay(4);
         }
         vTaskDelay(16);
@@ -3216,12 +3319,6 @@ void setup()
     }
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
-    ret = esp_vfs_spiffs_register(&conf);
-    if (ret == ESP_OK) {
-        printf("SPIFFS mounted!\n");
-    } else {
-        printf("SPIFFS ERROR! NOW FORMAT! PLEASE WAIT...\n");
-    }
     static const int i2s_num = 0; // i2s port number
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),

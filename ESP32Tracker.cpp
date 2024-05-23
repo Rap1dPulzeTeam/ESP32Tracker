@@ -102,7 +102,6 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_B 8
 #define KEY_C 9
 #define LCD_BK 9
-
 class aFrameBuffer : public Adafruit_GFX {
   public:
     uint16_t lcd_buffer[40960];
@@ -202,6 +201,34 @@ bool writeConfig(const Config_t *config) {
 
     printf("Config file written successfully\n");
     return true;
+}
+
+void copyFile(const char *sourceFile, const char *destFile) {
+    FILE *source, *dest;
+    char buffer[1024];
+    size_t bytesRead;
+
+    source = fopen(sourceFile, "rb");
+    if (source == NULL) {
+        perror("Failed to open source file");
+        exit(EXIT_FAILURE);
+    }
+
+    dest = fopen(destFile, "wb");
+    if (dest == NULL) {
+        fclose(source);
+        perror("Failed to open destination file");
+        exit(EXIT_FAILURE);
+    }
+
+    while ((bytesRead = fread(buffer, 1, sizeof(buffer), source)) > 0) {
+        fwrite(buffer, 1, bytesRead, dest);
+    }
+
+    fclose(source);
+    fclose(dest);
+
+    printf("File copied successfully from %s to %s\n", sourceFile, destFile);
 }
 
 const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.9175884672f, 3624501.595143772f, 3650766.227807657f, 3677221.184826728f, 3703867.8453697185f, 3730707.5985993897f,
@@ -2137,12 +2164,114 @@ void importSamp(int8_t *sampData) {
     char *filePath = fileSelect("/sdcard");
     key_event_t optionKeyEvent;
     FILE *sampFile = fopen(filePath, "rb");
+    WavHeader_t header;
     free(filePath);
+    if (parseWavHeader(sampFile, &header)) {
+        printf("Read Error!\n");
+        fclose(sampFile);
+        return;
+    }
+    int8_t snap[160];
+    fseek(sampFile, 0, SEEK_END);
+    size_t fileEnd = ftell(sampFile) - 44;
+    fseek(sampFile, 44, SEEK_SET);
+    uint32_t showCount = roundf(fileEnd / 160.0f);
+    if (showCount) {
+        if (header.bitsPerSample == 8) {
+            for (uint8_t i = 0; i < 160; i++) {
+                uint8_t *snap2 = (uint8_t*)malloc(4096 * sizeof(uint8_t));
+                fread(snap2, 1, 4096, sampFile);
+                fseek(sampFile, showCount, SEEK_CUR);
+                /*
+                if (ftell(sampFile) > header.subchunk2Size) {
+                    fseek(sampFile, 0, SEEK_END);
+                }
+                */
+                float tol = 0;
+                for (uint16_t j = 0; j < 4096; j++) {
+                    tol += snap2[j]-128;
+                    tol /= j;
+                }
+                snap[i] = tol;
+                printf("snap[%d] = %d\n", i, snap[i]);
+                free(snap2);
+            }
+        }
+        if (header.bitsPerSample == 16) {
+            for (uint8_t i = 0; i < 160; i++) {
+                int16_t *snap2 = (int16_t*)malloc(2048 * sizeof(int16_t));
+                fread(snap2, 2, 2048, sampFile);
+                fseek(sampFile, showCount-4096, SEEK_CUR);
+                /*
+                if (ftell(sampFile) > header.subchunk2Size) {
+                    fseek(sampFile, 0, SEEK_END);
+                }
+                */
+                float tol = 0;
+                for (uint16_t j = 0; j < 2048; j++) {
+                    tol += snap2[j];
+                    tol /= 2;
+                }
+                snap[i] = tol / 256;
+                frame.setCursor(0, 40);
+                frame.fillRect(0, 40, 160, 12, 0x0000);
+                frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
+                free(snap2);
+                frame.display();
+            }
+        }
+    } else {
+        if (header.bitsPerSample == 8) {
+            if (header.numChannels == 1) {
+                fread(snap, 1, 160, sampFile);
+                for (uint8_t i = 0; i < 160; i++) {
+                    snap[i] -= 128;
+                }
+            } else
+            if (header.numChannels == 2) {
+                uint8_t snap2[320];
+                fread(snap2, 2, 160, sampFile);
+                for (uint8_t i = 0; i < 160; i++) {
+                    snap[i] = (snap2[i<<1] + snap2[(i<<1)+1]) >> 1;
+                    snap[i] -= 128;
+                }
+            }
+        } else
+        if (header.bitsPerSample == 16) {
+            if (header.numChannels == 1) {
+                int16_t snap2[160];
+                fread(snap2, sizeof(int16_t), 160, sampFile);
+                for (uint8_t i = 0; i < 160; i++) {
+                    snap[i] = snap2[i] >> 8;
+                }
+            } else
+            if (header.numChannels == 2) {
+                int16_t snap2[320];
+                fread(snap2, sizeof(int16_t) * 2, 160, sampFile);
+                for (uint8_t i = 0; i < 160; i++) {
+                    snap[i] = (snap2[i<<1] + snap2[(i<<1)+1]) >> 9;
+                }
+            }
+        }
+    }
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.setCursor(0, 10);
     frame.printf("Sample Editer");
+    if (showCount) {
+        for (uint8_t x = 0; x < 160; x++) {
+            uint8_t y = abs(snap[x]>>1);
+            frame.drawFastVLine(x, 64, y, 0xffff);
+            frame.drawFastVLine(x, 64, -y, 0xffff);
+        }
+    } else {
+        for (uint8_t x = 0; x < 160; x++) {
+            frame.drawFastVLine(x, 64, snap[x], 0xffff);
+        }
+    }
+    frame.display();
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) break;
@@ -2328,10 +2457,10 @@ void Setting() {
     bool CurChange = true;
     uint8_t AnimStep = 0;
 
-    const uint8_t SETTING_NUM = 5;
+    const uint8_t SETTING_NUM = 6;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "Export Config to sdcard", "Close"};
     uint8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2397,7 +2526,8 @@ void Setting() {
                 }
                 if (optPos == 1) {MenuPos = 4; break;}
                 if (optPos == 2) wav_player();
-                if (optPos == 3) {writeConfig(&config);}
+                if (optPos == 3) writeConfig(&config);
+                if (optPos == 4) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
             switch (optionKeyEvent.num)

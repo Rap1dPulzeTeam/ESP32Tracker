@@ -2096,10 +2096,11 @@ void importSamp(int8_t *sampData) {
     frame.printf("Sample Editer");
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
-            if (optionKeyEvent.num == KEY_OK) {fclose(sampFile); break;}
+            if (optionKeyEvent.num == KEY_OK) break;
         }
         vTaskDelay(32);
     }
+    fclose(sampFile);
 }
 
 void SampEdit() {
@@ -2244,6 +2245,7 @@ void SampEdit() {
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
+                if (optPos == 1) importSamp(tracker_data_sample[show_num]);
                 if (optPos == 3) {show_num++; if (show_num > 31) show_num = 1;}
                 if (optPos == 4) {show_num--; if (show_num < 1) show_num = 31;}
                 if (optPos == 5) {

@@ -2214,7 +2214,7 @@ void importSamp(int8_t *sampData) {
                 }
                 snap[i] = tol / 256;
                 frame.setCursor(0, 40);
-                frame.fillRect(0, 40, 160, 12, 0x0000);
+                frame.fillRect(0, 38, 160, 12, 0x0000);
                 frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
                 // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
                 free(snap2);

@@ -156,7 +156,7 @@ uint32_t wave_MAX_R_OUT = 0;
 bool MAX_COMP_FINISH = false;
 
 bool enbFltr[4] = {false, false, false, false};
-bool enbDelay[4] = {true, true, true, true};
+bool enbDelay[4] = {false, false, false, false};
 
 float cutOffFreq[4] = {SMP_RATE/2, SMP_RATE/2, SMP_RATE/2, SMP_RATE/2};
 
@@ -2084,6 +2084,24 @@ void filterSetting() {
     }
 }
 
+void importSamp(int8_t *sampData) {
+    char *filePath = fileSelect("/sdcard");
+    key_event_t optionKeyEvent;
+    FILE *sampFile = fopen(filePath, "rb");
+    free(filePath);
+    MainReDraw();
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.setCursor(0, 10);
+    frame.printf("Sample Editer");
+    for (;;) {
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == KEY_OK) {fclose(sampFile); break;}
+        }
+        vTaskDelay(32);
+    }
+}
+
 void SampEdit() {
     const uint8_t OPTION_NUM = 6;
     const char *menuStr[OPTION_NUM] = {"New", "Load", "Info", "Next", "Prev", "Close"};
@@ -2094,6 +2112,7 @@ void SampEdit() {
     bool confMenu = false;
     uint8_t optPos = 0;
     uint8_t optPos_last = 0;
+    uint8_t confPos = 0;
     bool CurChange = true;
     uint8_t AnimStep = 0;
     key_event_t optionKeyEvent;
@@ -2108,9 +2127,13 @@ void SampEdit() {
     for (;;) {
         frame.fillRect(0, 19, 160, 44, ST7735_BLACK);
         frame.fillRect(0, 63, 42, 65, ST7735_BLACK);
-        frame.drawFastVLine(42, 28, 141, 0xf79e);
+        frame.drawFastVLine(77, 29, 33, 0xa514);
+        frame.drawFastVLine(42, 28, 141, 0xa514);
+        frame.drawFastVLine(41, 28, 141, 0xf79e);
         frame.drawFastHLine(0, 28, 160, 0x867f);
         frame.drawFastHLine(42, 63, 118, 0xf79e);
+        frame.drawFastHLine(43, 62, 117, 0xa514);
+        frame.drawFastVLine(119, 29, 10, 0xa514);
         frame.fillRect(0, 19, 160, 9, 0x2104);
 
         if (refresh_data) {
@@ -2179,13 +2202,16 @@ void SampEdit() {
         }
 
         frame.setCursor(44, 30);
-        frame.printf("VOL:%2d FTV:%2d", samp_info[show_num].vol, samp_info[show_num].finetune);
+        frame.printf("CONF: VOL %2d FTV %2d", samp_info[show_num].vol, samp_info[show_num].finetune);
         frame.drawFastHLine(43, 38, 117, 0xf79e);
-        frame.setCursor(44, 40);
-        frame.printf(samp_info[show_num].loopLen > 1 ? "LOOP: START   END" : "LOOP: DISABLE");
-        frame.drawFastHLine(43, 48, 117, 0xa514);
+        frame.setCursor(44, 47);
+
+        frame.printf(samp_info[show_num].loopLen > 1 ? "LOOP:" : "LOOP:    DISABLE");
         if (samp_info[show_num].loopLen > 1) {
-            frame.setCursor(80, 50);
+            frame.drawFastHLine(78, 50, 82, 0xa514);
+            frame.setCursor(84, 41);
+            frame.printf("START   END");
+            frame.setCursor(80, 53);
             frame.printf("%-6d %-6d", samp_info[show_num].loopStart<<1, (samp_info[show_num].loopLen+samp_info[show_num].loopStart)<<1);
             frame.drawFastVLine(119, 39, 24, 0xa514);
         }
@@ -2200,7 +2226,7 @@ void SampEdit() {
                 printf("INIT! STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f\n", AnimMenu.startX, AnimMenu.startY, AnimMenu.endX, AnimMenu.endY);
             }
             // printf("STARTX=%.1f STARTY=%.1f ENDX=%.1f ENDY=%.1f X=%d Y=%d\n", startX, startY, endX, endY, getAnimationX(), getAnimationY());
-            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 42, 11, 0x528a);
+            frame.fillRect(AnimMenu.getAnimationX(), AnimMenu.getAnimationY(), 41, 11, 0x528a);
             AnimMenu.nextAnimation(9);
             AnimStep++;
             if (AnimStep > 14) {
@@ -2208,7 +2234,7 @@ void SampEdit() {
                 AnimStep = 0;
             }
         } else {
-            frame.fillRect(0, (optPos*10)+29, 42, 11, 0x528a);
+            frame.fillRect(0, (optPos*10)+29, 41, 11, 0x528a);
         }
         for (uint8_t i = 0; i < OPTION_NUM; i++) {
             frame.printf("%s\n", menuStr[i]);

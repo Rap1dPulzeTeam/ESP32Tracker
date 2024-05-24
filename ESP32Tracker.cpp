@@ -404,6 +404,40 @@ float lowPassFilterSingleSample(float sample, int chl, float cutoffFreqIn, uint1
 }
 
 int8_t read_tracker_file(const char* path) {
+    uint8_t *tracker_header_back = (uint8_t*)malloc(1084);
+    printf("NOW READ FILE %s\n", path);
+    FILE *file = fopen(path, "rb");
+
+    if (!file) {
+        printf("Failed to open file %s\n", path);
+        return -1;
+    }
+    memcpy(tracker_header_back, tracker_data_header, 1084);
+    size_t readRelly = fread(tracker_data_header, 1, 1084, file);
+    printf("READ HEADER FINISH\n");
+    if (readRelly < 1084) {
+        printf("READ %s ERROR! FILE TOO SMALL! FILE SIZE IS %zu\n", path, readRelly);
+        fclose(file);
+        memcpy(tracker_data_header, tracker_header_back, 1084);
+        free(tracker_header_back);
+        return -1;
+    }
+
+    if ((tracker_data_header[1080] != 0x4D) ||
+        (tracker_data_header[1081] != 0x2E) ||
+        (tracker_data_header[1082] != 0x4B) ||
+        (tracker_data_header[1083] != 0x2E)) {
+        printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, 
+            tracker_data_header[1080], tracker_data_header[1081], 
+            tracker_data_header[1082], tracker_data_header[1083]);
+        fclose(file);
+        memcpy(tracker_data_header, tracker_header_back, 1084);
+        free(tracker_header_back);
+        return -1;
+    }
+
+    free(tracker_header_back);
+
     // Free previously allocated memory for patterns
     for (uint8_t i = 0; i < pat_max; i++) {
         if (tracker_data_pattern && tracker_data_pattern[i]) {
@@ -412,6 +446,7 @@ int8_t read_tracker_file(const char* path) {
             tracker_data_pattern[i] = NULL;
         }
     }
+
     if (tracker_data_pattern) {
         printf("PAT ADRS %p\n", tracker_data_pattern);
         free(tracker_data_pattern);
@@ -425,32 +460,6 @@ int8_t read_tracker_file(const char* path) {
             free(tracker_data_sample[i]);
             tracker_data_sample[i] = NULL;
         }
-    }
-
-    printf("NOW READ FILE %s\n", path);
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        printf("Failed to open file %s\n", path);
-        return -1;
-    }
-
-    size_t readRelly = fread(tracker_data_header, 1, 1084, file);
-    printf("READ HEADER FINISH\n");
-    if (readRelly < 1084) {
-        printf("READ %s ERROR! FILE TOO SMALL! FILE SIZE IS %zu\n", path, readRelly);
-        fclose(file);
-        return -1;
-    }
-
-    if ((tracker_data_header[1080] != 0x4D) ||
-        (tracker_data_header[1081] != 0x2E) ||
-        (tracker_data_header[1082] != 0x4B) ||
-        (tracker_data_header[1083] != 0x2E)) {
-        printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, 
-            tracker_data_header[1080], tracker_data_header[1081], 
-            tracker_data_header[1082], tracker_data_header[1083]);
-        fclose(file);
-        return -1;
     }
 
     read_pattern_table(tracker_data_header);
@@ -948,27 +957,30 @@ const char* findNote(int frequency) {
         low = 0;
         high = NOTES_PER_RANGE - 1;
         while (low <= high) {
-            mid = low + (high - low) / 2; // 计算中间位置
+            mid = low + (high - low) / 2;
             if (period_table[i][mid].frequency == frequency) {
-                return period_table[i][mid].note_name; // 找到音符，返回音符名
+                return period_table[i][mid].note_name;
             } else if (period_table[i][mid].frequency < frequency) {
-                high = mid - 1; // 查找左半部分
+                high = mid - 1;
             } else {
-                low = mid + 1; // 查找右半部分
+                low = mid + 1;
             }
         }
     }
-    return "???"; // 没有找到对应的音符
+    return "???";
 }
 
-int main() {
-    const char *note = findNote(808); // 测试查找频率为808的音符
-    printf("Note: %s\n", note);
-    return 0;
+QueueHandle_t popUpEvent;
+
+void popUpTask(void *arg) {
+    
+    for (;;) {
+
+    }
 }
 
 char* fileSelect(const char* root_path) {
-    playStat = false;
+    // playStat = false;
     char path[256];
     uint8_t path_depth = 0;
     int16_t SelPos = 0;
@@ -995,7 +1007,7 @@ char* fileSelect(const char* root_path) {
         // frame.setCursor(0, 20);
         if (count < 0) {
             frame.printf("Failed to list directory.\n");
-            return "FAIL";
+            return (char*)"FAIL";
         }
         showBuf = shortenFileName(path, 12);
         // shortenFileName(root_path, 12, showBuf);
@@ -1043,7 +1055,6 @@ char* fileSelect(const char* root_path) {
             SelPos = 1;
             emyDir = true;
         }
-        playStat = false;
         frame.display();
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) { if (optionKeyEvent.status == KEY_ATTACK) {
@@ -1064,6 +1075,12 @@ char* fileSelect(const char* root_path) {
                     printf("%s\n", path);
                     path_depth--;
                     SelPos = 0;
+                } else {
+                    for (uint16_t i = 0; i < count; i++) {
+                        free(files[i].name);
+                    }
+                    free(files);
+                    return NULL;
                 }
                 break;
             case KEY_UP:
@@ -1168,10 +1185,16 @@ inline void MainReDraw() {
     frame.setTextSize(0);
 }
 
-inline void fileOpt() {
+int8_t fileOpt() {
     key_event_t optionKeyEvent;
     for (;;) {
         char *fileName = fileSelect("/sdcard");
+        if (fileName == NULL) {
+            free(fileName);
+            return -1;
+        }
+        playStat = false;
+        vTaskDelay(8);
         int8_t ret = read_tracker_file(fileName);
         free(fileName);
         uint16_t *snap = (uint16_t*)malloc(160*128*sizeof(uint16_t));
@@ -1197,7 +1220,7 @@ inline void fileOpt() {
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
-                vTaskDelay(4);
+                vTaskDelay(8);
             }
             for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
@@ -1234,7 +1257,7 @@ inline void fileOpt() {
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
-                vTaskDelay(4);
+                vTaskDelay(8);
             }
             for (uint8_t i = 0; i < 24; i++) {
                 frame.drawRGBBitmap(0, 0, snap, 160, 128);
@@ -1270,26 +1293,30 @@ inline void fileOpt() {
         }
         free(snap);
     }
+    return 0;
 }
 
 void loadFileInit() {
+    if (fileOpt()) {windowsClose = true; goto loadRef;}
+    playStat = false;
     part_point = 0;
     row_point = 0;
     data_index[0] = data_index[1] = data_index[2] = data_index[3] = 0;
     mute[0] = mute[1] = mute[2] = mute[3] = 0;
     period[0] = period[1] = period[2] = period[3] = 0;
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
-    fileOpt();
     read_pattern_table(tracker_data_header);
     read_samp_info(tracker_data_header);
     windowsClose = true;
+    row_point = 0;
+
+loadRef:
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.fillRect(113, 19, 47, 7, 0xa514);
     frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
     frame.fillRect(0, 10, 160, 8, 0x2104);
-    row_point = 0;
 }
 
 void newFileInit() {
@@ -1441,11 +1468,6 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
 
 void MainPage() {
     if (fromOtherPage) {fromOtherPage = false;xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);}
-    frame.drawFastHLine(0, 9, 160, 0xe71c);
-    frame.drawFastHLine(0, 18, 160, 0xe71c);
-    frame.fillRect(113, 19, 47, 7, 0xa514);
-    frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
-    frame.fillRect(0, 10, 160, 8, 0x2104);
     uint8_t sideMenu = 0;
     uint8_t fileMenu = 0;
     uint8_t fileMenu_last = 0;
@@ -1460,6 +1482,14 @@ void MainPage() {
     Animation AnimMenu = Animation();
     uint8_t animStep = 0;
     bool CurChange = false;
+
+    MainReDraw();
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.fillRect(113, 19, 47, 7, 0xa514);
+    frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
+    frame.fillRect(0, 10, 160, 8, 0x2104);
+
     for (;;) {
         if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
         if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
@@ -1610,12 +1640,12 @@ void MainPage() {
                 for (uint8_t chl = 0; chl < 4; chl++) {
                     read_part_data(tracker_data_pattern, part_table[part_point], row_point+i, chl, viewTmp);
                     showTmpNote = viewTmp[0];
-                    showTmpSamp = viewTmp[1];
+                    showTmpSamp = clamp(viewTmp[1], 0, 33);
 
                     frame.setCursor(frame.getCursorX()+4, frame.getCursorY());
                     if (showTmpNote) {
                         frame.setTextColor(0xa51f);
-                        frame.printf("%s", findNote(showTmpNote));
+                        frame.printf("%3s", findNote(showTmpNote));
                     } else {
                         frame.setTextColor(0x52aa);
                         frame.printf("...");
@@ -1704,8 +1734,7 @@ void MainPage() {
                             playStat = true;
                         }
                         if (fileMenu == 2) {
-                            playStat = false;
-                            vTaskDelay(16);
+                            // playStat = false;
                             sideMenu = 0;
                             fileMenu = 0;
                             loadFileInit();
@@ -2160,6 +2189,10 @@ void filterSetting() {
     }
 }
 
+void prevSamp(void *arg) {
+    FILE *sampFile = (FILE *) arg;
+}
+
 void importSamp(int8_t *sampData) {
     char *filePath = fileSelect("/sdcard");
     key_event_t optionKeyEvent;
@@ -2178,6 +2211,8 @@ void importSamp(int8_t *sampData) {
     fseek(sampFile, 44, SEEK_SET);
     uint32_t cutStart = 0;
     uint32_t cutLen = 1;
+    bool playing = false;
+    TaskHandle_t PREVSAMP;
 
     printf("INFO:\n");
     printf("Sample Rate: %d\n", header.sampleRate);
@@ -2357,6 +2392,11 @@ void importSamp(int8_t *sampData) {
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) break;
+            if (optionKeyEvent.num == KEY_SPACE) {
+                if (playing) vTaskDelete(&PREVSAMP);
+                else xTaskCreatePinnedToCore(&prevSamp, "input", 4096, sampFile, 3, &PREVSAMP, 0);
+                playing = !playing;
+            }
         }
         vTaskDelay(32);
     }
@@ -2539,10 +2579,10 @@ void Setting() {
     bool CurChange = true;
     uint8_t AnimStep = 0;
 
-    const uint8_t SETTING_NUM = 6;
+    const uint8_t SETTING_NUM = 8;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "Export Config to sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "uwu", "Export Config to sdcard", "Import Config from sdcard", "Close"};
     uint8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2609,7 +2649,9 @@ void Setting() {
                 if (optPos == 1) {MenuPos = 4; break;}
                 if (optPos == 2) wav_player();
                 if (optPos == 3) writeConfig(&config);
-                if (optPos == 4) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
+                if (optPos == 4) 
+                if (optPos == 5) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
+                if (optPos == 6) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
             switch (optionKeyEvent.num)
@@ -2641,33 +2683,27 @@ void display_lcd(void *arg) {
     read_samp_info(tracker_data_header);
     part_point = 0;
     xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
-    vTaskDelay(16);
+    vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
             MainReDraw();
             windowsClose = true;
             MainPage();
-            vTaskDelay(4);
         } else if (MenuPos == 1) {
             MainReDraw();
             ChlEdit();
-            vTaskDelay(4);
         } else if (MenuPos == 3) {
             MainReDraw();
             Setting();
-            vTaskDelay(4);
         }
         else if (MenuPos == 4) {
             MainReDraw();
             filterSetting();
-            vTaskDelay(4);
         }
         else if (MenuPos == 5) {
             MainReDraw();
             SampEdit();
-            vTaskDelay(4);
         }
-        vTaskDelay(4);
     }
 }
 bool TestNote = false;

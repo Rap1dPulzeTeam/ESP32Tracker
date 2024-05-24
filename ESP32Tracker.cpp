@@ -1778,7 +1778,7 @@ void MainPage() {
         if (ChlMenuPos) {
             char menuShow[13];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
-            windowsMenu(menuShow, ChlMenuPos, ChlMenuPos_last, 3, 90, AnimMenu, CurChange, animStep, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editer", "Close");
+            windowsMenu(menuShow, ChlMenuPos, ChlMenuPos_last, 3, 90, AnimMenu, CurChange, animStep, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editor", "Close");
             animStep++;
             if (animStep > 14) {
                 CurChange = false;
@@ -2165,6 +2165,7 @@ void importSamp(int8_t *sampData) {
     key_event_t optionKeyEvent;
     FILE *sampFile = fopen(filePath, "rb");
     WavHeader_t header;
+    printf("File Name: %s\n", filePath);
     free(filePath);
     if (parseWavHeader(sampFile, &header)) {
         printf("Read Error!\n");
@@ -2175,50 +2176,116 @@ void importSamp(int8_t *sampData) {
     fseek(sampFile, 0, SEEK_END);
     size_t fileEnd = ftell(sampFile) - 44;
     fseek(sampFile, 44, SEEK_SET);
+    uint32_t cutStart = 0;
+    uint32_t cutLen = 1;
+
+    printf("INFO:\n");
+    printf("Sample Rate: %d\n", header.sampleRate);
+    printf("Num Channels: %d\n", header.numChannels);
+    printf("Bits Per Sample: %d\n", header.bitsPerSample);
+    printf("Sub Chunk2Size: %d\n", header.subchunk2Size);
+
+    // Generate preview data
     uint32_t showCount = roundf(fileEnd / 160.0f);
+    printf("\nShowCount: %d\n", showCount);
     if (showCount) {
+        frame.setTextColor(0x1082);
         if (header.bitsPerSample == 8) {
-            for (uint8_t i = 0; i < 160; i++) {
+            if (header.numChannels == 1) {
                 uint8_t *snap2 = (uint8_t*)malloc(4096 * sizeof(uint8_t));
-                fread(snap2, 1, 4096, sampFile);
-                fseek(sampFile, showCount, SEEK_CUR);
-                /*
-                if (ftell(sampFile) > header.subchunk2Size) {
-                    fseek(sampFile, 0, SEEK_END);
+                for (uint8_t i = 0; i < 160; i++) {
+                    fread(snap2, 1, 4096, sampFile);
+                    fseek(sampFile, showCount, SEEK_CUR);
+                    /*
+                    if (ftell(sampFile) > header.subchunk2Size) {
+                        fseek(sampFile, 0, SEEK_END);
+                    }
+                    */
+                    float tol = 0;
+                    for (uint16_t j = 0; j < 4096; j++) {
+                        tol += snap2[j]-128;
+                        tol /= 2;
+                    }
+                    snap[i] = tol/2;
+                    frame.setCursor(2, 40);
+                    frame.fillRect(0, 38, 160, 12, 0xc618);
+                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.display();
                 }
-                */
-                float tol = 0;
-                for (uint16_t j = 0; j < 4096; j++) {
-                    tol += snap2[j]-128;
-                    tol /= j;
+                free(snap2);
+            } else
+            if (header.numChannels == 2) {
+                uint8_t *snap2 = (uint8_t*)malloc(4096 * sizeof(uint8_t));
+                for (uint8_t i = 0; i < 160; i++) {
+                    fread(snap2, 2, 2048, sampFile);
+                    fseek(sampFile, showCount, SEEK_CUR);
+                    /*
+                    if (ftell(sampFile) > header.subchunk2Size) {
+                        fseek(sampFile, 0, SEEK_END);
+                    }
+                    */
+                    float tol = 0;
+                    for (uint16_t j = 0; j < 2048; j++) {
+                        tol += ((snap2[j<<1] + snap2[(j<<1)+1]) >> 1) - 128;
+                        tol /= 2;
+                    }
+                    snap[i] = tol/2;
+                    frame.setCursor(2, 40);
+                    frame.fillRect(0, 38, 160, 12, 0xc618);
+                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.display();
                 }
-                snap[i] = tol;
-                printf("snap[%d] = %d\n", i, snap[i]);
                 free(snap2);
             }
-        }
+        } else
         if (header.bitsPerSample == 16) {
-            for (uint8_t i = 0; i < 160; i++) {
+            if (header.numChannels == 1) {
                 int16_t *snap2 = (int16_t*)malloc(2048 * sizeof(int16_t));
-                fread(snap2, 2, 2048, sampFile);
-                fseek(sampFile, showCount-4096, SEEK_CUR);
-                /*
-                if (ftell(sampFile) > header.subchunk2Size) {
-                    fseek(sampFile, 0, SEEK_END);
+                for (uint8_t i = 0; i < 160; i++) {
+                    fread(snap2, 2, 2048, sampFile);
+                    fseek(sampFile, showCount-4096, SEEK_CUR);
+                    /*
+                    if (ftell(sampFile) > header.subchunk2Size) {
+                        fseek(sampFile, 0, SEEK_END);
+                    }
+                    */
+                    float tol = 0;
+                    for (uint16_t j = 0; j < 2048; j++) {
+                        tol += snap2[j];
+                        tol /= 2;
+                    }
+                    snap[i] = (tol / 256) / 2;
+                    frame.setCursor(2, 40);
+                    frame.fillRect(0, 38, 160, 12, 0xc618);
+                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
+                    frame.display();
                 }
-                */
-                float tol = 0;
-                for (uint16_t j = 0; j < 2048; j++) {
-                    tol += snap2[j];
-                    tol /= 2;
-                }
-                snap[i] = tol / 256;
-                frame.setCursor(0, 40);
-                frame.fillRect(0, 38, 160, 12, 0x0000);
-                frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
-                // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
                 free(snap2);
-                frame.display();
+            } else
+            if (header.numChannels == 2) {
+                int16_t *snap2 = (int16_t*)malloc(2048 * sizeof(int16_t) * 2);
+                for (uint8_t i = 0; i < 160; i++) {
+                    fread(snap2, 2, 2048 * 2, sampFile);
+                    fseek(sampFile, showCount-4096, SEEK_CUR);
+                    /*
+                    if (ftell(sampFile) > header.subchunk2Size) {
+                        fseek(sampFile, 0, SEEK_END);
+                    }
+                    */
+                    float tol = 0;
+                    for (uint16_t j = 0; j < 2048; j++) {
+                        tol += snap2[j<<1] + snap2[(j<<1)+1];
+                        tol /= 2;
+                    }
+                    snap[i] = (tol / 256) / 2;
+                    frame.setCursor(2, 40);
+                    frame.fillRect(0, 38, 160, 12, 0xc618);
+                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
+                    frame.display();
+                }
+                free(snap2);
             }
         }
     } else {
@@ -2227,6 +2294,7 @@ void importSamp(int8_t *sampData) {
                 fread(snap, 1, 160, sampFile);
                 for (uint8_t i = 0; i < 160; i++) {
                     snap[i] -= 128;
+                    snap[i] /= 2;
                 }
             } else
             if (header.numChannels == 2) {
@@ -2235,6 +2303,7 @@ void importSamp(int8_t *sampData) {
                 for (uint8_t i = 0; i < 160; i++) {
                     snap[i] = (snap2[i<<1] + snap2[(i<<1)+1]) >> 1;
                     snap[i] -= 128;
+                    snap[i] /= 2;
                 }
             }
         } else
@@ -2244,6 +2313,7 @@ void importSamp(int8_t *sampData) {
                 fread(snap2, sizeof(int16_t), 160, sampFile);
                 for (uint8_t i = 0; i < 160; i++) {
                     snap[i] = snap2[i] >> 8;
+                    snap[i] /= 2;
                 }
             } else
             if (header.numChannels == 2) {
@@ -2251,24 +2321,36 @@ void importSamp(int8_t *sampData) {
                 fread(snap2, sizeof(int16_t) * 2, 160, sampFile);
                 for (uint8_t i = 0; i < 160; i++) {
                     snap[i] = (snap2[i<<1] + snap2[(i<<1)+1]) >> 9;
+                    snap[i] /= 2;
                 }
             }
         }
     }
+
+    frame.setTextColor(ST7735_WHITE);
+
     MainReDraw();
     frame.drawFastHLine(0, 9, 160, 0xe71c);
+
+    frame.fillRect(0, 19, 160, 64, 0x4208);
+
     frame.drawFastHLine(0, 18, 160, 0xe71c);
+    frame.drawFastHLine(0, 19, 160, 0xa514);
+
+    frame.drawFastHLine(0, 83, 160, 0xe71c);
+    frame.drawFastHLine(0, 82, 160, 0xa514);
+
     frame.setCursor(0, 10);
-    frame.printf("Sample Editer");
+    frame.printf("Import Sample");
     if (showCount) {
         for (uint8_t x = 0; x < 160; x++) {
-            uint8_t y = abs(snap[x]>>1);
-            frame.drawFastVLine(x, 64, y, 0xffff);
-            frame.drawFastVLine(x, 64, -y, 0xffff);
+            uint8_t y = clamp(abs(snap[x]>>1), 0, 32);
+            frame.drawFastVLine(x, 51, y, 0xffff);
+            frame.drawFastVLine(x, 51, -y, 0xffff);
         }
     } else {
         for (uint8_t x = 0; x < 160; x++) {
-            frame.drawFastVLine(x, 64, snap[x], 0xffff);
+            frame.drawFastVLine(x, 51, clamp(snap[x], -32, 32), 0xffff);
         }
     }
     frame.display();
@@ -2297,7 +2379,7 @@ void SampEdit() {
     key_event_t optionKeyEvent;
     Animation AnimMenu = Animation();
     frame.setCursor(0, 10);
-    frame.printf("Sample Editer");
+    frame.printf("Sample Editor");
     uint8_t show_num = 1;
     bool refresh_data = true;
     int8_t snap[117] = {0};

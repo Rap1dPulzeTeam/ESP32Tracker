@@ -49,6 +49,8 @@ uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
 void read_pattern_table(uint8_t head_data[1084]);
 void read_samp_info(uint8_t head_data[1084]);
+inline void refsPopUp();
+bool PopUpExist;
 // void comp_wave_ofst();
 #define CHL_NUM 4
 #define TRACKER_ROW 64
@@ -74,6 +76,13 @@ ESPRotary rotary;
 bool RtyL = false;
 bool RtyR = false;
 bool RtyB = false;
+
+#define RTY_VOL 1
+#define RTY_MIX 2
+#define RTY_CPU 3
+
+uint8_t RTY_MOD = RTY_VOL;
+
 static uint8_t pat_max = 0;
 
 typedef enum {
@@ -122,7 +131,7 @@ class aFrameBuffer : public Adafruit_GFX {
         lcd_buffer[x + y * _width] = color;
     }
 
-    void display() {tft.drawRGBBitmap(0, 0, lcd_buffer, 160, 128);}
+    void display() {if (PopUpExist) refsPopUp();tft.drawRGBBitmap(0, 0, lcd_buffer, 160, 128);}
 };
 
 aFrameBuffer frame(160, 128);
@@ -733,9 +742,22 @@ void display(void *arg) {
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
-                sprintf(ten, " %2d %2d>%2d %d", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
-                // sprintf(ten, "%d   %d   %d   %d   %d   %d\n", channelActive[0], channelActive[1], channelActive[2], channelActive[3], channelActive[4], channelActive[5]);
-                // sprintf(one, "%3d %3d %3d %3d %3d %3d\n", sigBase[0], sigBase[1], sigBase[2], sigBase[3], sigBase[4], sigBase[5]);
+
+                switch (RTY_MOD)
+                {
+                case RTY_VOL:
+                    sprintf(ten, " VOL: %d    ", (int8_t)(global_vol*100));
+                    break;
+                
+                case RTY_MIX:
+                    sprintf(ten, " MIX: %d    ", (int8_t)(stroMix*100));
+                    break;
+
+                case RTY_CPU:
+                    sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
+                    break;
+                }
+
                 addr[0] = (uint8_t)(data_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
                 addr[1] = (uint8_t)(data_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
                 addr[2] = (uint8_t)(data_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
@@ -1020,11 +1042,11 @@ typedef struct {
     char *msg;
     uint8_t w;
     uint8_t h;
+    uint16_t time;
 } popUpEvent_t;
 
 Animation popUpAnim;
 popUpEvent_t popUpEvent;
-bool PopUpExist;
 
 inline void refsPopUp() {
     frame.fillRect(popUpAnim.getAnimationX(), popUpAnim.getAnimationY(), popUpEvent.w, popUpEvent.h, 0x4208);
@@ -1049,7 +1071,7 @@ void popUpTask(void *arg) {
                 popUpAnim.nextAnimation(6);
                 vTaskDelay(10);
             }
-            vTaskDelay(1768);
+            vTaskDelay(popUpEvent.time);
             popUpAnim.initAnimation(160-popUpEvent.w-12, 100, 160, 128, 24);
             for (uint8_t i = 0; i < 22; i++) {
                 popUpAnim.nextAnimation(6);
@@ -1057,14 +1079,15 @@ void popUpTask(void *arg) {
             }
             vTaskDelay(4);
             printf("ANIM END!\n");
+            PopUpExist = false;
         }
-        PopUpExist = false;
     }
 }
 
-inline int8_t sendPopUpEvent(const char *msg) {
+inline int8_t sendPopUpEvent(const char *msg, uint16_t time) {
     popUpEvent_t popUpEventMsg;
     popUpEventMsg.msg = (char*)msg;
+    popUpEventMsg.time = time;
     printf("SEND A POPUP EVENT!\n");
     xQueueSend(popUpEventQueue, &popUpEventMsg.msg, 0);
     return 0;
@@ -1265,7 +1288,7 @@ char* fileSelect(const char* root_path) {
 
 inline void MainReDraw() {
     frame.fillScreen(ST7735_BLACK);
-    frame.setTextWrap(true);
+    frame.setTextWrap(false);
     frame.setTextSize(1);
     frame.setTextColor(0x2945);
     frame.setCursor(2, 2);
@@ -1320,6 +1343,7 @@ int8_t fileOpt() {
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
+                frame.display();
                 vTaskDelay(8);
             }
             for (uint8_t i = 0; i < 24; i++) {
@@ -1358,6 +1382,7 @@ int8_t fileOpt() {
                 Anim0.nextAnimation(8);
             }
             while(readOptionKeyEvent != pdTRUE) {
+                frame.display();
                 vTaskDelay(8);
             }
             for (uint8_t i = 0; i < 24; i++) {
@@ -1595,8 +1620,6 @@ void MainPage() {
     frame.fillRect(0, 10, 160, 8, 0x2104);
 
     for (;;) {
-        if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
-        if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
         PerStat = readOptionKeyEvent;
         frame.setCursor(0, 10);
         frame.print(song_name);
@@ -1827,13 +1850,13 @@ void MainPage() {
                         }
                         if (fileMenu == 3 && !recMod) {
                             playStat = false;
-                            recMod = true;
                             printf("SAVE!\n");
                             vTaskDelay(8);
                             // memset(buffer, 0, 6892 * sizeof(int16_t));
                             char *export_wave_name = (char*)malloc(strlen(song_name)+32);
                             sprintf(export_wave_name, "/sdcard/%s_record.wav", song_name);
                             export_wav_file = wav_audio_start(export_wave_name, SMP_RATE, 16, 2);
+                            recMod = true;
                             vTaskDelay(8);
                             free(export_wave_name);
                             playStat = true;
@@ -1967,7 +1990,6 @@ void MainPage() {
 
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
-        if (PopUpExist) refsPopUp();
         frame.display();
     }
 }
@@ -2174,7 +2196,6 @@ void wav_player() {
             frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
             frame.setCursor(0, 10);
             frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
-            if (PopUpExist) refsPopUp();
             frame.display();
         }
         for (uint16_t s = 0; s < 2560; s++) {
@@ -2217,8 +2238,6 @@ void wav_player() {
                 break;
             }
         }
-        if (RtyL) {RtyL = false;stroMix += 0.01;printf("MIX %f\n", stroMix);}
-        if (RtyR) {RtyR = false;stroMix -= 0.01;printf("MIX %f\n", stroMix);}
         refs_p++;
         vTaskDelay(1);
     }
@@ -2268,7 +2287,6 @@ void filterSetting() {
             frame.printf("CUTOFF: %.1fHz\n", config.cutOffFreq[i]);
             frame.setCursor(52, frame.getCursorY()+10);
         }
-        if (PopUpExist) refsPopUp();
         frame.display();
         vTaskDelay(4);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
@@ -2535,7 +2553,7 @@ void SampEdit() {
     frame.setCursor(0, 10);
     frame.printf("Sample Editor");
     bool confMenu = false;
-    uint8_t optPos = 0;
+    int8_t optPos = 0;
     uint8_t optPos_last = 0;
     uint8_t confPos = 0;
     bool CurChange = true;
@@ -2688,6 +2706,7 @@ void SampEdit() {
             case KEY_UP:
                 optPos_last = optPos;
                 optPos--;
+                if (optPos < 0) optPos = OPTION_NUM-1;
                 CurChange = true;
                 AnimStep = 0;
                 break;
@@ -2695,6 +2714,7 @@ void SampEdit() {
             case KEY_DOWN:
                 optPos_last = optPos;
                 optPos++;
+                if (optPos >= OPTION_NUM) optPos = 0;
                 CurChange = true;
                 AnimStep = 0;
                 break;
@@ -2712,7 +2732,7 @@ void Setting() {
     key_event_t optionKeyEvent;
 
     const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "uwu", "Export Config to sdcard", "Import Config from sdcard", "Close"};
-    uint8_t optPos = 0;
+    int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -2746,7 +2766,6 @@ void Setting() {
             frame.printf("%s\n", menuStr[i]);
             frame.setCursor(0, frame.getCursorY()+2);
         }
-        if (PopUpExist) refsPopUp();
         frame.display();
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
@@ -2778,8 +2797,11 @@ void Setting() {
                 }
                 if (optPos == 1) {MenuPos = 4; break;}
                 if (optPos == 2) wav_player();
-                if (optPos == 3) writeConfig(&config);
-                if (optPos == 4) sendPopUpEvent("uwu");
+                if (optPos == 3) {
+                    if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);
+                    else sendPopUpEvent("Save failed", 1024);
+                }
+                if (optPos == 4) sendPopUpEvent("uwu", 2048);
                 if (optPos == 5) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 6) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
@@ -2789,6 +2811,7 @@ void Setting() {
             case KEY_UP:
                 optPos_last = optPos;
                 optPos--;
+                if (optPos < 0) optPos = SETTING_NUM-1;
                 CurChange = true;
                 AnimStep = 0;
                 break;
@@ -2796,6 +2819,7 @@ void Setting() {
             case KEY_DOWN:
                 optPos_last = optPos;
                 optPos++;
+                if (optPos >= SETTING_NUM) optPos = 0;
                 CurChange = true;
                 AnimStep = 0;
                 break;
@@ -2805,6 +2829,13 @@ void Setting() {
     fromOtherPage = true;
 }
 
+void RotaryRefs(void *arg) {
+    for (;;) {
+        rotary.loop();
+        vTaskDelay(1);
+    }
+}
+
 void display_lcd(void *arg) {
     xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
     MainReDraw();
@@ -2812,7 +2843,8 @@ void display_lcd(void *arg) {
     read_pattern_table(tracker_data_header);
     read_samp_info(tracker_data_header);
     part_point = 0;
-    xTaskCreate(&comp, "Sound Eng", 9000, NULL, 5, &SOUND_ENG);
+    xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
+    xTaskCreate(&RotaryRefs, "Rotary", 1024, NULL, 3, NULL);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -3400,17 +3432,30 @@ void write_samp_info(uint8_t head_data[1084]) {
 
 const char* root_path = "/spiffs";
 
-void rotate(ESPRotary& rotary) {
-    printf("ROTARY %d\n", (int)rotary.getDirection());
-    if ((uint8_t)rotary.getDirection() == 255) {
-        RtyL = true;
-    }
-    if ((uint8_t)rotary.getDirection() == 1) {
-        RtyR = true;
+void IRAM_ATTR rotate(ESPRotary& rotary) {
+    uint8_t rtyRel = (uint8_t)rotary.getDirection();
+    // printf("ROTARY %d\n", (int)rotary.getDirection());
+    switch (RTY_MOD)
+    {
+    case RTY_VOL:
+        if (rtyRel == 255) global_vol += 0.01;
+        else global_vol -= 0.01;
+        break;
+    
+    case RTY_MIX:
+        if (rtyRel == 255) stroMix += 0.01;
+        else stroMix -= 0.01;
+        break;
+
+    case RTY_CPU:
+        // sendPopUpEvent("unsupported", 1024);
+        break;
     }
 }
 
 void IRAM_ATTR setKeyOK() {
+    RTY_MOD++;
+    if (RTY_MOD > 3) RTY_MOD = 0;
     RtyB = true;
 }
 
@@ -3456,7 +3501,7 @@ void input(void *arg) {
     // rotary.setLeftRotationHandler(showDirection);
     // rotary.setRightRotationHandler(showDirection);
     Serial.begin(115200);
-    attachInterrupt(21, setKeyOK, RISING);
+    attachInterrupt(21, setKeyOK, FALLING);
     key_event_t optionKeyEvent;
     bool fnA = false;
     bool fnB = false;
@@ -3467,7 +3512,7 @@ void input(void *arg) {
     };
     temp_sensor_set_config(temp_sensor);
     temp_sensor_start();
-    while (true) {
+    for (;;) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
@@ -3587,8 +3632,23 @@ void input(void *arg) {
             }
         }
         vTaskDelay(2);
-        if (RtyB) {RtyB = false; sendPopUpEvent("Helloworld");}
-        rotary.loop();
+        if (RtyB) {
+            RtyB = false;
+            switch (RTY_MOD)
+            {
+            case RTY_VOL:
+                sendPopUpEvent("Volume Control", 1024);
+                break;
+            
+            case RTY_MIX:
+                sendPopUpEvent("Channel Mix Index", 1024);
+                break;
+
+            case RTY_CPU:
+                sendPopUpEvent("Tracker Info", 1024);
+                break;
+            }
+        }
     }
 }
 

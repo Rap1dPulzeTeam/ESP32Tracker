@@ -34,6 +34,7 @@
 #include "audioTypedef.h"
 #include <Adafruit_MPR121.h>
 #include "abcd.h"
+#include "3x5font.h"
 #include "esp32/clk.h"
 
 #define MOUNT_POINT "/sdcard"
@@ -145,6 +146,8 @@ char song_name[20];
 bool dispRedy = false;
 bool dispReadConfigStatus = false;
 bool dispSdcardError = false;
+bool dispReadingFile = false;
+bool dispReadingFileError = false;
 bool playStat = false;
 uint32_t wave_MAX_L = 0;
 uint32_t wave_MAX_R = 0;
@@ -268,6 +271,15 @@ inline int clamp(int value, int min, int max) {
         return value;
 }
 
+float fast_exp(float x) {
+    union {
+        float f;
+        uint32_t i;
+    } u;
+    u.i = (uint32_t)(12102203 * x + 1064866805);
+    return u.f;
+}
+
 class Animation {
 public:
     float startX, startY;
@@ -298,7 +310,7 @@ public:
     void nextAnimation(float k) {
         if (step < maxSteps) {
             float t = (float)step / (float)maxSteps;
-            float scale = 1.0f - expf(-k * t);  // 使用指数衰减函数
+            float scale = 1.0f - fast_exp(-k * t);  // 使用指数衰减函数
             
             currentX = roundf(startX * (1 - scale) + endX * scale);
             currentY = roundf(startY * (1 - scale) + endY * scale);
@@ -572,7 +584,7 @@ float frq[4] = {0, 0, 0, 0};
 float data_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
-float global_vol = 0.5f;
+float global_vol = 1.0f;
 
 int16_t temp;
 
@@ -606,9 +618,27 @@ static inline int16_t audioLimit(Limiter *limiter, int16_t inputSample, uint16_t
     }
 }
 
+typedef struct
+{ 
+    size_t write_size;
+    void *write_src;
+    bool status;
+} i2s_write_config_t;
+
+i2s_write_config_t i2s_write_config;
+TaskHandle_t I2S_WRITE_H;
+
+void i2s_write_task(void *arg) { for (;;) {
+    if (i2s_write_config.write_src != NULL) 
+        i2s_write(I2S_NUM_0, i2s_write_config.write_src, i2s_write_config.write_size, &wrin, portMAX_DELAY);
+    i2s_write_config.status = false;
+    vTaskSuspend(NULL);
+}}
+
 Limiter limiter;
 
-int8_t audio_master_write(const void *src, size_t size, size_t len) {
+int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
+    audio16BitStro *buffer16BitStro = (audio16BitStro*)src;
     for (uint16_t i = 0; i < len; i++) {
         if (size == 4) {
             buffer16BitStro[i].dataL *= global_vol;
@@ -636,7 +666,14 @@ int8_t audio_master_write(const void *src, size_t size, size_t len) {
     wave_MAX_R_OUT = wave_MAX_R / 2560;
     wave_MAX_R = 0;
     MAX_COMP_FINISH = true;
-    i2s_write(I2S_NUM_0, src, len*size, &wrin, portMAX_DELAY);
+    i2s_write_config.write_src = buffer16BitStro;
+    i2s_write_config.write_size = len*size;
+    i2s_write_config.status = true;
+    if (recMod) wav_audio_write(i2s_write_config.write_src, i2s_write_config.write_size, &wrin, export_wav_file);
+    else {
+        vTaskResume(I2S_WRITE_H);
+        while (i2s_write_config.status) {vTaskDelay(1);}
+    }
     // printf("L=%5d R=%5d\n", wave_MAX_L_OUT, wave_MAX_R_OUT);
     return 0;
 }
@@ -686,6 +723,13 @@ void display(void *arg) {
             } else {
                 vTaskDelay(1);
             }
+        } else if (dispReadingFile) {
+            ssd1306_clear_buffer(&dev);
+            for (uint8_t i = 0; i < 7; i++) {
+                ssd1306_display_text(&dev, i, "               ", 16, false);
+            }
+            ssd1306_display_text(&dev, 7, dispReadingFileError ? "READ FILE ERROR" : "READING FILE...", 16, false);
+            vTaskDelay(128);
         } else {
             for (uint8_t contr = 0; contr < 4; contr++) {
                 ssd1306_clear_buffer(&dev);
@@ -918,7 +962,7 @@ int8_t ChlMenuPos = 0;
 int8_t ChlMenuPos_last = 0;
 bool windowsClose = true;
 int8_t MenuPos = 2;
-TaskHandle_t COMP;
+TaskHandle_t SOUND_ENG;
 TaskHandle_t LOAD;
 bool partUP = false;
 bool partDOWN = false;
@@ -970,13 +1014,60 @@ const char* findNote(int frequency) {
     return "???";
 }
 
-QueueHandle_t popUpEvent;
+QueueHandle_t popUpEventQueue;
+
+typedef struct {
+    char *msg;
+    uint8_t w;
+    uint8_t h;
+} popUpEvent_t;
+
+Animation popUpAnim;
+popUpEvent_t popUpEvent;
+bool PopUpExist;
+
+inline void refsPopUp() {
+    frame.fillRect(popUpAnim.getAnimationX(), popUpAnim.getAnimationY(), popUpEvent.w, popUpEvent.h, 0x4208);
+    frame.drawRect(popUpAnim.getAnimationX(), popUpAnim.getAnimationY(), popUpEvent.w, popUpEvent.h, ST7735_WHITE);
+    frame.setCursor(popUpAnim.getAnimationX()+7, popUpAnim.getAnimationY()+6);
+    frame.setTextColor(0x7bcf);
+    frame.print(popUpEvent.msg);
+    frame.setCursor(popUpAnim.getAnimationX()+6, popUpAnim.getAnimationY()+5);
+    frame.setTextColor(ST7735_WHITE);
+    frame.print(popUpEvent.msg);
+}
 
 void popUpTask(void *arg) {
-    
     for (;;) {
-
+        if (xQueueReceive(popUpEventQueue, &popUpEvent, portMAX_DELAY) == pdTRUE) {
+            PopUpExist = true;
+            printf("RECEIVED POPUP EVENT!\n");
+            popUpEvent.w = (strlen(popUpEvent.msg)*6)+12;
+            popUpEvent.h = 18;
+            popUpAnim.initAnimation(160, 128, 160-popUpEvent.w-12, 100, 24);
+            for (uint8_t i = 0; i < 22; i++) {
+                popUpAnim.nextAnimation(6);
+                vTaskDelay(10);
+            }
+            vTaskDelay(1768);
+            popUpAnim.initAnimation(160-popUpEvent.w-12, 100, 160, 128, 24);
+            for (uint8_t i = 0; i < 22; i++) {
+                popUpAnim.nextAnimation(6);
+                vTaskDelay(10);
+            }
+            vTaskDelay(4);
+            printf("ANIM END!\n");
+        }
+        PopUpExist = false;
     }
+}
+
+inline int8_t sendPopUpEvent(const char *msg) {
+    popUpEvent_t popUpEventMsg;
+    popUpEventMsg.msg = (char*)msg;
+    printf("SEND A POPUP EVENT!\n");
+    xQueueSend(popUpEventQueue, &popUpEventMsg.msg, 0);
+    return 0;
 }
 
 char* fileSelect(const char* root_path) {
@@ -1075,6 +1166,8 @@ char* fileSelect(const char* root_path) {
                     printf("%s\n", path);
                     path_depth--;
                     SelPos = 0;
+                    AnimStep = 0;
+                    CurChange = true;
                 } else {
                     for (uint16_t i = 0; i < count; i++) {
                         free(files[i].name);
@@ -1089,8 +1182,8 @@ char* fileSelect(const char* root_path) {
                 if (SelPos < 0) {
                     SelPos = count-1;
                 }
-                CurChange = true;
                 AnimStep = 0;
+                CurChange = true;
                 break;
             case KEY_DOWN:
                 SelPos_last = SelPos % 10;
@@ -1098,8 +1191,8 @@ char* fileSelect(const char* root_path) {
                 if (SelPos > count-1) {
                     SelPos = 0;
                 }
-                CurChange = true;
                 AnimStep = 0;
+                CurChange = true;
                 break;
             }
             if (optionKeyEvent.num == KEY_OK) {
@@ -1133,6 +1226,8 @@ char* fileSelect(const char* root_path) {
                     count = list_directory(path, &files);
                     printf("%s\n", path);
                     SelPos = 0;
+                    AnimStep = 0;
+                    CurChange = true;
                 } else {
                     break;
                 }
@@ -1194,7 +1289,11 @@ int8_t fileOpt() {
             return -1;
         }
         playStat = false;
-        vTaskDelay(8);
+        dispReadingFileError = false;
+        dispReadingFile = true;
+        vTaskSuspend(SOUND_ENG);
+        memset(buffer, 0, BUFF_SIZE * sizeof(audio16BitStro));
+        i2s_zero_dma_buffer(I2S_NUM_0);
         int8_t ret = read_tracker_file(fileName);
         free(fileName);
         uint16_t *snap = (uint16_t*)malloc(160*128*sizeof(uint16_t));
@@ -1202,6 +1301,7 @@ int8_t fileOpt() {
         Animation Anim0 = Animation();
         Animation Anim1 = Animation();
         if (ret == -1) {
+            dispReadingFileError = true;
             Anim0.initAnimation(0, -80, 0, 0, 32);
             Anim1.initAnimation(0, 0, 0, -80, 32);
             for (uint8_t i = 0; i < 24; i++) {
@@ -1239,6 +1339,7 @@ int8_t fileOpt() {
             }
             MainReDraw();
         } else if (ret == -2) {
+            dispReadingFileError = true;
             Anim0.initAnimation(0, -80, 0, 0, 32);
             Anim1.initAnimation(0, 0, 0, -80, 32);
             for (uint8_t i = 0; i < 24; i++) {
@@ -1276,6 +1377,7 @@ int8_t fileOpt() {
             }
             MainReDraw();
         } else {
+            dispReadingFileError = false;
             Animation Anim = Animation();
             Anim.initAnimation(0, 0, 0, 128, 32);
             for (uint8_t i = 0; i < 30; i++) {
@@ -1293,6 +1395,8 @@ int8_t fileOpt() {
         }
         free(snap);
     }
+    vTaskResume(SOUND_ENG);
+    dispReadingFile = false;
     return 0;
 }
 
@@ -1569,31 +1673,10 @@ void MainPage() {
 
             // PAT VIEW LINE
             frame.drawFastVLine(112, 19, 35, ST7735_WHITE);
-
-            // TRACKER CHL LINE
             frame.drawFastHLine(0, 55, 160, 0xa514);
-            frame.drawFastVLine(156, 56, 72, 0x4a51);
-            frame.drawFastVLine(157, 56, 72, 0x6b7e);
-            frame.drawFastVLine(158, 56, 72, 0xad7f);
-            frame.drawFastVLine(159, 56, 72, 0xa514);
-
-            frame.drawFastVLine(12, 56, 72, 0x4a51);
-            frame.drawFastVLine(13, 56, 72, 0x6b7e);
-            frame.drawFastVLine(14, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(48, 56, 72, 0x4a51);
-            frame.drawFastVLine(49, 56, 72, 0x6b7e);
-            frame.drawFastVLine(50, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(84, 56, 72, 0x4a51);
-            frame.drawFastVLine(85, 56, 72, 0x6b7e);
-            frame.drawFastVLine(86, 56, 72, 0xad7f);
-
-            frame.drawFastVLine(120, 56, 72, 0x4a51);
-            frame.drawFastVLine(121, 56, 72, 0x6b7e);
-            frame.drawFastVLine(122, 56, 72, 0xad7f);
             printf("ReDraw\n");
         }
+
         //----------------------MAIN PAGE-------------------------
         if (ChlPos == 0 && !sideMenu) {
             frame.fillRect(0, 56, 13, 72, 0x630c);
@@ -1611,6 +1694,28 @@ void MainPage() {
         }
 
         frame.drawRect(0, 87, 160, 9, editMod ? 0xfc51 : 0x529f);
+
+        // TRACKER CHL LINE
+        frame.drawFastVLine(156, 56, 72, 0x4a51);
+        frame.drawFastVLine(157, 56, 72, 0x6b7e);
+        frame.drawFastVLine(158, 56, 72, 0xad7f);
+        frame.drawFastVLine(159, 56, 72, 0xa514);
+
+        frame.drawFastVLine(12, 56, 72, 0x4a51);
+        frame.drawFastVLine(13, 56, 72, 0x6b7e);
+        frame.drawFastVLine(14, 56, 72, 0xad7f);
+
+        frame.drawFastVLine(48, 56, 72, 0x4a51);
+        frame.drawFastVLine(49, 56, 72, 0x6b7e);
+        frame.drawFastVLine(50, 56, 72, 0xad7f);
+
+        frame.drawFastVLine(84, 56, 72, 0x4a51);
+        frame.drawFastVLine(85, 56, 72, 0x6b7e);
+        frame.drawFastVLine(86, 56, 72, 0xad7f);
+
+        frame.drawFastVLine(120, 56, 72, 0x4a51);
+        frame.drawFastVLine(121, 56, 72, 0x6b7e);
+        frame.drawFastVLine(122, 56, 72, 0xad7f);
 
         frame.setCursor(116, 29);
         frame.fillRect(115, 28, 21, 25, 0x2104);
@@ -1862,6 +1967,7 @@ void MainPage() {
 
         //----------------------MAIN PAGH-------------------------
         //----------------------KEY STATUS------------------------
+        if (PopUpExist) refsPopUp();
         frame.display();
     }
 }
@@ -1881,11 +1987,13 @@ void ChlEdit() {
     for (;;) {
         frame.fillRect(0, 40, 77, 88, ST7735_BLACK);
         frame.fillRect(0, 40, vol[ChlPos-1], 8, (((vol[ChlPos-1]>>1) << 11) | (clamp(vol[ChlPos-1], 0, 63) << 5) | (vol[ChlPos-1]>>1)));//0x8578);
+        frame.setFont(&font3x5);
         frame.setTextColor(0xef9d);
-        frame.setCursor(0, 49);
+        frame.setCursor(0, 69);
         frame.printf("VOLE:%d\nPROD:%d\nFREQ:%.1f\n", vol[ChlPos-1], period[ChlPos-1], frq[ChlPos-1]);
         frame.setTextColor(0x8410);
         frame.printf("SAMP INFO\nNAME:\n%s\nNUM: %d\nLEN: %d\nFTV: %d\nVOL: %d", samp_info[smp_num[ChlPos-1]].name, smp_num[ChlPos-1], samp_info[smp_num[ChlPos-1]].len<<1, samp_info[smp_num[ChlPos-1]].finetune, samp_info[smp_num[ChlPos-1]].vol);
+        frame.setFont(&abcd);
 
         vTaskDelay(2);
 
@@ -2027,27 +2135,27 @@ int parseWavHeader(FILE* file, WavHeader_t* header) {
 }
 
 void wav_player() {
+    vTaskSuspend(SOUND_ENG);
+    view_mode = true;
     key_event_t optionKeyEvent;
-    playStat = false;
     FILE *wave_file;
     size_t bytes_read;
-    view_mode = true;
-    vTaskDelay(64);
     buffer = realloc(buffer, 10240);
     buffer16BitStro = (audio16BitStro*)buffer;
-    memset(buffer, 0, BUFF_SIZE * sizeof(int16_t));
+    memset(buffer, 0, 2560 * sizeof(audio16BitStro));
+    if (audio_master_write(buffer, 1, sizeof(audio16BitStro), 2560) != 0) exit(-1);
+    i2s_zero_dma_buffer(I2S_NUM_0);
     char *wave_file_name = fileSelect("/sdcard");
     wave_file = fopen(wave_file_name, "rb");
     free(wave_file_name);
     WavHeader_t header;
     parseWavHeader(wave_file, &header);
+    i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
     printf("WAV File Information:\n");
     printf("Sample Rate: %u Hz\n", header.sampleRate);
     printf("Channels: %u\n", header.numChannels);
     printf("Bits Per Sample: %u\n", header.bitsPerSample);
     size_t writeing;
-    i2s_zero_dma_buffer(I2S_NUM_0);
-    i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
     frame.fillScreen(ST7735_BLACK);
     frame.setTextColor(ST7735_WHITE);
     frame.setCursor(0, 0);
@@ -2056,7 +2164,7 @@ void wav_player() {
     frame.printf("WAV File Information:\nSample Rate: %u Hz\nBits Per Sample: %u\nChannels: %u", header.sampleRate, header.bitsPerSample, header.numChannels);
     frame.setTextColor(ST7735_WHITE);
     frame.display();
-    float i2s_vol = 1.0f;
+    static float i2s_vol = 1.0f;
     uint16_t read_p;
     uint8_t refs_p = 0;
     while (!feof(wave_file)) {
@@ -2066,6 +2174,7 @@ void wav_player() {
             frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
             frame.setCursor(0, 10);
             frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
+            if (PopUpExist) refsPopUp();
             frame.display();
         }
         for (uint16_t s = 0; s < 2560; s++) {
@@ -2080,7 +2189,7 @@ void wav_player() {
         MAX_COMP_FINISH = true;
         */
         // i2s_write(I2S_NUM_0, buffer, 10240, &writeing, portMAX_DELAY);
-        if (audio_master_write(buffer, sizeof(audio16BitStro), 2560) != 0) exit(-1);
+        if (audio_master_write(buffer, header.numChannels, sizeof(audio16BitStro), 2560) != 0) exit(-1);
         // printf("%d %d L=%5d R=%5d\n", writeing, read_p, wave_MAX_L_OUT, wave_MAX_R_OUT);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             switch (optionKeyEvent.num)
@@ -2113,22 +2222,22 @@ void wav_player() {
         refs_p++;
         vTaskDelay(1);
     }
-    vTaskDelay(64);
     buffer = realloc(buffer, BUFF_SIZE * sizeof(audio16BitStro));
     buffer16BitStro = (audio16BitStro*)buffer;
-    vTaskDelay(64);
     memset(buffer, 0, BUFF_SIZE * sizeof(audio16BitStro));
     fclose(wave_file);
     vTaskDelay(16);
     i2s_zero_dma_buffer(I2S_NUM_0);
     i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     MenuPos = 0;
+    vTaskResume(SOUND_ENG);
     view_mode = false;
     vTaskDelay(64);
 }
 
 void filterSetting() {
     MainReDraw();
+    frame.setFont(&font3x5);
     int8_t fltrPos = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
@@ -2159,6 +2268,7 @@ void filterSetting() {
             frame.printf("CUTOFF: %.1fHz\n", config.cutOffFreq[i]);
             frame.setCursor(52, frame.getCursorY()+10);
         }
+        if (PopUpExist) refsPopUp();
         frame.display();
         vTaskDelay(4);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
@@ -2187,14 +2297,26 @@ void filterSetting() {
             }
         }
     }
+    frame.setFont(&abcd);
 }
+
+uint32_t prevSampStart;
+uint32_t prevSampEnd;
 
 void prevSamp(void *arg) {
+    static uint32_t prevSampStart;
+    static uint32_t prevSampEnd;
     FILE *sampFile = (FILE *) arg;
+    fseek(sampFile, 44+prevSampStart, SEEK_SET);
+    vTaskDelete(NULL);
 }
 
-void importSamp(int8_t *sampData) {
+void* importSamp(int8_t *sampData) {
     char *filePath = fileSelect("/sdcard");
+    if (filePath == NULL) {
+        free(filePath);
+        return NULL;
+    }
     key_event_t optionKeyEvent;
     FILE *sampFile = fopen(filePath, "rb");
     WavHeader_t header;
@@ -2203,7 +2325,7 @@ void importSamp(int8_t *sampData) {
     if (parseWavHeader(sampFile, &header)) {
         printf("Read Error!\n");
         fclose(sampFile);
-        return;
+        return NULL;
     }
     int8_t snap[160];
     fseek(sampFile, 0, SEEK_END);
@@ -2394,13 +2516,14 @@ void importSamp(int8_t *sampData) {
             if (optionKeyEvent.num == KEY_OK) break;
             if (optionKeyEvent.num == KEY_SPACE) {
                 if (playing) vTaskDelete(&PREVSAMP);
-                else xTaskCreatePinnedToCore(&prevSamp, "input", 4096, sampFile, 3, &PREVSAMP, 0);
+                else xTaskCreatePinnedToCore(&prevSamp, "Prev Sample", 4096, sampFile, 3, &PREVSAMP, 0);
                 playing = !playing;
             }
         }
         vTaskDelay(32);
     }
     fclose(sampFile);
+    return NULL;
 }
 
 void SampEdit() {
@@ -2409,7 +2532,8 @@ void SampEdit() {
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.drawFastHLine(0, 18, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 8, 0x42d0);
-    frame.display();
+    frame.setCursor(0, 10);
+    frame.printf("Sample Editor");
     bool confMenu = false;
     uint8_t optPos = 0;
     uint8_t optPos_last = 0;
@@ -2418,8 +2542,6 @@ void SampEdit() {
     uint8_t AnimStep = 0;
     key_event_t optionKeyEvent;
     Animation AnimMenu = Animation();
-    frame.setCursor(0, 10);
-    frame.printf("Sample Editor");
     uint8_t show_num = 1;
     bool refresh_data = true;
     int8_t snap[117] = {0};
@@ -2545,7 +2667,14 @@ void SampEdit() {
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
-                if (optPos == 1) importSamp(tracker_data_sample[show_num]);
+                if (optPos == 1) {
+                    importSamp(tracker_data_sample[show_num]);
+                    frame.drawFastHLine(0, 9, 160, 0xe71c);
+                    frame.drawFastHLine(0, 18, 160, 0xe71c);
+                    frame.fillRect(0, 10, 160, 8, 0x42d0);
+                    frame.setCursor(0, 10);
+                    frame.printf("Sample Editor");
+                }
                 if (optPos == 3) {show_num++; if (show_num > 31) show_num = 1;}
                 if (optPos == 4) {show_num--; if (show_num < 1) show_num = 31;}
                 if (optPos == 5) {
@@ -2617,6 +2746,7 @@ void Setting() {
             frame.printf("%s\n", menuStr[i]);
             frame.setCursor(0, frame.getCursorY()+2);
         }
+        if (PopUpExist) refsPopUp();
         frame.display();
         vTaskDelay(2);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
@@ -2649,7 +2779,7 @@ void Setting() {
                 if (optPos == 1) {MenuPos = 4; break;}
                 if (optPos == 2) wav_player();
                 if (optPos == 3) writeConfig(&config);
-                if (optPos == 4) 
+                if (optPos == 4) sendPopUpEvent("uwu");
                 if (optPos == 5) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 6) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
@@ -2682,7 +2812,7 @@ void display_lcd(void *arg) {
     read_pattern_table(tracker_data_header);
     read_samp_info(tracker_data_header);
     part_point = 0;
-    xTaskCreate(&comp, "Play", 9000, NULL, 5, &COMP);
+    xTaskCreate(&comp, "Sound Eng", 9000, NULL, 5, &SOUND_ENG);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -2797,6 +2927,7 @@ void comp(void *arg) {
     int8_t skipToRow = 0;
     uint16_t buffPtr = 0;
     dispReadConfigStatus = true;
+    xTaskCreate(i2s_write_task, "I2S_WRITE", 1024, NULL, 5, &I2S_WRITE_H);
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -2823,14 +2954,9 @@ void comp(void *arg) {
                 buffPtr++;
                 if (buffPtr >= BUFF_SIZE) {
                     buffPtr = 0;
-                    if (recMod) {
-                        wav_audio_write(buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, export_wav_file);
-                        printf("WRIN %d\n", wrin);
-                    } else {
-                        // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
-                        if (audio_master_write(buffer, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
-                        // printf("WRIN %d\n", wrin);
-                    }
+                    // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+                    if (audio_master_write(buffer, 2, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
+                    // printf("WRIN %d\n", wrin);
                 }
                 if (Mtick == TICK_NUL) {
                     // pwm_audio_write((uint8_t*)&buffer, Mtick, &wrin, 64);
@@ -2939,7 +3065,7 @@ void comp(void *arg) {
                                 if (part_buffer[1]) {
                                     smp_num[chl] = part_buffer[1];
                                 }
-                            }
+                            } else if (part_buffer[2] == 3 && part_buffer[3]) portToneSpeed[chl] = part_buffer[3];
 
                             if (part_buffer[2] == 10
                                     || part_buffer[2] == 6
@@ -3090,9 +3216,6 @@ void comp(void *arg) {
                             printf("SKIP TO %d\n", rowLoopStart);
                         }
                         if ((row_point > 63) || skipToNextPart || skipToAnyPart) {
-                            if (recMod) {
-                                fflush(export_wav_file);
-                            }
                             if (skipToRow) {
                                 row_point = skipToRow;
                                 skipToRow = 0;
@@ -3164,20 +3287,18 @@ void comp(void *arg) {
                 }
             }
         } else {
-            if (!view_mode) {
-                for (uint16_t i = 0; i < BUFF_SIZE; i++) {
-                    if (samp_info[smp_num[0]].loopLen > 1) {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
-                    } else {
-                        buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
-                    }
-                    buffer16BitStro[i].dataL = (int16_t)
-                            (buffer_ch[chlMap[0]][i]
-                                    + buffer_ch[chlMap[1]][i]);
-                    buffer16BitStro[i].dataR = (int16_t)
-                            (buffer_ch[chlMap[2]][i]
-                                    + buffer_ch[chlMap[3]][i]);
+            for (uint16_t i = 0; i < BUFF_SIZE; i++) {
+                if (samp_info[smp_num[0]].loopLen > 1) {
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
+                } else {
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
                 }
+                buffer16BitStro[i].dataL = (int16_t)
+                        (buffer_ch[chlMap[0]][i]
+                                + buffer_ch[chlMap[1]][i]);
+                buffer16BitStro[i].dataR = (int16_t)
+                        (buffer_ch[chlMap[2]][i]
+                                + buffer_ch[chlMap[3]][i]);
             }
             if (TestNote) {
                 TestNote = false;
@@ -3221,14 +3342,10 @@ void comp(void *arg) {
                 }
             }
             // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
-            if (!view_mode) {
-                frq[0] = patch_table[samp_info[smp_num[0]].finetune] / period[0];
-                // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
-                if (audio_master_write(buffer, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
-                vTaskDelay(4);
-            } else {
-                vTaskDelay(32);
-            }
+            frq[0] = patch_table[samp_info[smp_num[0]].finetune] / period[0];
+            // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
+            if (audio_master_write(buffer, 2, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
+            vTaskDelay(4);
         }
     }
 }
@@ -3470,6 +3587,7 @@ void input(void *arg) {
             }
         }
         vTaskDelay(2);
+        if (RtyB) {RtyB = false; sendPopUpEvent("Helloworld");}
         rotary.loop();
     }
 }
@@ -3488,6 +3606,7 @@ void setup()
     initLimiter(&limiter, 16384*global_vol, 16380*global_vol);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
+    popUpEventQueue = xQueueCreate(4, sizeof(popUpEvent_t));
     // initDelayBuffer();
     dispRedy = true;
     esp_err_t ret;
@@ -3565,6 +3684,7 @@ void setup()
         vTaskDelay(16);
         frame.display();
     }
+    xTaskCreatePinnedToCore(&popUpTask, "Pop Up Task", 2048, NULL, 0, NULL, 0);
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 8192, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
     static const int i2s_num = 0; // i2s port number
@@ -3576,7 +3696,7 @@ void setup()
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 8,
-        .dma_buf_len = 512,
+        .dma_buf_len = 256,
         .use_apll = false,
         .tx_desc_auto_clear = false,
         .fixed_mclk = 0
@@ -3588,7 +3708,6 @@ void setup()
         .data_out_num = 41,
         .data_in_num = I2S_PIN_NO_CHANGE
     };
-
     printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
     printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
     i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);

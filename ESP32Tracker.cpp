@@ -36,6 +36,7 @@
 #include "abcd.h"
 #include "3x5font.h"
 #include "esp32/clk.h"
+#include "bfs_snake.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -101,7 +102,6 @@ QueueHandle_t xOptionKeyQueue;
 
 #define readOptionKeyEvent xQueueReceive(xOptionKeyQueue, &optionKeyEvent, 0)
 #define readTouchPadKeyEvent xQueueReceive(xTouchPadQueue, &touchPadEvent, 0)
-
 #define KEY_UP 1
 #define KEY_DOWN 2
 #define KEY_L 3
@@ -607,6 +607,8 @@ typedef struct {
     int16_t soft_knee;
 } Limiter;
 
+bool snake_mod = false;
+
 void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
     limiter->threshold = threshold;
     limiter->soft_knee = soft_knee;
@@ -689,6 +691,8 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
 
 // OSC START -----------------------------------------------------
 void display(void *arg) {
+    Snake snake;
+    Point food, direction = {1, 0};
     char ten[24];
     char one[24];
     SSD1306_t dev;
@@ -740,95 +744,121 @@ void display(void *arg) {
             ssd1306_display_text(&dev, 7, dispReadingFileError ? "READ FILE ERROR" : "READING FILE...", 16, false);
             vTaskDelay(128);
         } else {
-            for (uint8_t contr = 0; contr < 4; contr++) {
-                ssd1306_clear_buffer(&dev);
+            if (snake_mod) {
+                srand(234*buffer16BitStro[1].dataL+buffer16BitStro[2].dataR*buffer16BitStro[3].dataL+buffer16BitStro[6].dataR+buffer16BitStro[2].dataL+buffer16BitStro[9].dataR*1234);
+                init_snake(&snake);
+                init_food(&food, &snake);
+                for (;;) {
+                    if (!astar(&snake, food, &direction)) {
+                        Point next_position = {snake.body[0].x + direction.x, snake.body[0].y + direction.y};
+                        if (!is_valid(next_position, &snake)) {
+                            game_over(&dev);
+                            snake_mod = false;
+                            break;
+                        }
+                    }
+                    move_snake(&snake, direction);
 
-                switch (RTY_MOD)
-                {
-                case RTY_VOL:
-                    sprintf(ten, " VOL: %d    ", (int8_t)(global_vol*100));
-                    break;
-                
-                case RTY_MIX:
-                    sprintf(ten, " MIX: %d    ", (int8_t)(stroMix*100));
-                    break;
+                    if (snake.body[0].x == food.x && snake.body[0].y == food.y) {
+                        grow_snake(&snake);
+                        init_food(&food, &snake);
+                    }
 
-                case RTY_CPU:
-                    sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
-                    break;
+                    draw_game(&snake, food, &dev);
+                    vTaskDelay(1);
                 }
+                free(snake.body);
+            } else {
+                for (uint8_t contr = 0; contr < 4; contr++) {
+                    ssd1306_clear_buffer(&dev);
 
-                addr[0] = (uint8_t)(data_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
-                addr[1] = (uint8_t)(data_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
-                addr[2] = (uint8_t)(data_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
-                addr[3] = (uint8_t)(data_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
-                // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
-                ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
-                ssd1306_display_text(&dev, 6, ten, 16, false);
-                // ssd1306_display_text(&dev, 5, one, 16, false);
-                if (!mute[0]) {
-                for (x = 0; x < 32; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
-                    if (period[0]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
+                    switch (RTY_MOD)
+                    {
+                    case RTY_VOL:
+                        sprintf(ten, " VOL: %d    ", (int8_t)(global_vol*100));
+                        break;
+                    
+                    case RTY_MIX:
+                        sprintf(ten, " MIX: %d    ", (int8_t)(stroMix*100));
+                        break;
+
+                    case RTY_CPU:
+                        sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
+                        break;
                     }
-                    volTemp = (vol[0]/2) % 64;
-                    _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
-                    if (x < volTemp) {
-                        _ssd1306_line(&dev, x, 58, x, 63, false);
+
+                    addr[0] = (uint8_t)(data_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
+                    addr[1] = (uint8_t)(data_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
+                    addr[2] = (uint8_t)(data_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
+                    addr[3] = (uint8_t)(data_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
+                    // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
+                    ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
+                    ssd1306_display_text(&dev, 6, ten, 16, false);
+                    // ssd1306_display_text(&dev, 5, one, 16, false);
+                    if (!mute[0]) {
+                    for (x = 0; x < 32; x++) {
+                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        if (period[0]) {
+                            _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
+                        }
+                        volTemp = (vol[0]/2) % 64;
+                        _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
+                        if (x < volTemp) {
+                            _ssd1306_line(&dev, x, 58, x, 63, false);
+                        }
+                    }} else {
+                        _ssd1306_line(&dev, 0, 0, 31, 63, false);
+                        _ssd1306_line(&dev, 31, 0, 0, 63, false);
                     }
-                }} else {
-                    _ssd1306_line(&dev, 0, 0, 31, 63, false);
-                    _ssd1306_line(&dev, 31, 0, 0, 63, false);
+                    if (!mute[1]) {
+                    for (x = 32; x < 64; x++) {
+                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        if (period[1]) {
+                            _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
+                        }
+                        volTemp = vol[1]/2;
+                        _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
+                        if (x - 32 < volTemp) {
+                            _ssd1306_line(&dev, x, 58, x, 63, false);
+                        }
+                    }} else {
+                        _ssd1306_line(&dev, 32, 0, 63, 63, false);
+                        _ssd1306_line(&dev, 63, 0, 32, 63, false);
+                    }
+                    if (!mute[2]) {
+                    for (x = 64; x < 96; x++) {
+                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        if (period[2]) {
+                            _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
+                        }
+                        volTemp = vol[2]/2;
+                        _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
+                        if (x - 64 < volTemp) {
+                            _ssd1306_line(&dev, x, 58, x, 63, false);
+                        }
+                    }} else {
+                        _ssd1306_line(&dev, 64, 0, 95, 63, false);
+                        _ssd1306_line(&dev, 95, 0, 64, 63, false);
+                    }
+                    if (!mute[3]) {
+                    for (x = 96; x < 128; x++) {
+                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        if (period[3]) {
+                            _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
+                        }
+                        volTemp = vol[3]/2;
+                        _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
+                        if (x - 96 < volTemp) {
+                            _ssd1306_line(&dev, x, 58, x, 63, false);
+                        }
+                    }} else {
+                        _ssd1306_line(&dev, 96, 0, 127, 63, false);
+                        _ssd1306_line(&dev, 127, 0, 96, 63, false);
+                    }
+                    ssd1306_show_buffer(&dev);
+                    vTaskDelay(1);
                 }
-                if (!mute[1]) {
-                for (x = 32; x < 64; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
-                    if (period[1]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
-                    }
-                    volTemp = vol[1]/2;
-                    _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
-                    if (x - 32 < volTemp) {
-                        _ssd1306_line(&dev, x, 58, x, 63, false);
-                    }
-                }} else {
-                    _ssd1306_line(&dev, 32, 0, 63, 63, false);
-                    _ssd1306_line(&dev, 63, 0, 32, 63, false);
-                }
-                if (!mute[2]) {
-                for (x = 64; x < 96; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
-                    if (period[2]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
-                    }
-                    volTemp = vol[2]/2;
-                    _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
-                    if (x - 64 < volTemp) {
-                        _ssd1306_line(&dev, x, 58, x, 63, false);
-                    }
-                }} else {
-                    _ssd1306_line(&dev, 64, 0, 95, 63, false);
-                    _ssd1306_line(&dev, 95, 0, 64, 63, false);
-                }
-                if (!mute[3]) {
-                for (x = 96; x < 128; x++) {
-                    _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
-                    if (period[3]) {
-                        _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
-                    }
-                    volTemp = vol[3]/2;
-                    _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
-                    if (x - 96 < volTemp) {
-                        _ssd1306_line(&dev, x, 58, x, 63, false);
-                    }
-                }} else {
-                    _ssd1306_line(&dev, 96, 0, 127, 63, false);
-                    _ssd1306_line(&dev, 127, 0, 96, 63, false);
-                }
-                ssd1306_show_buffer(&dev);
-                vTaskDelay(1);
-            }
+            } 
         }
     }
 }
@@ -2728,10 +2758,10 @@ void Setting() {
     bool CurChange = true;
     uint8_t AnimStep = 0;
 
-    const uint8_t SETTING_NUM = 8;
+    const uint8_t SETTING_NUM = 9;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "uwu", "Export Config to sdcard", "Import Config from sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2802,8 +2832,9 @@ void Setting() {
                     else sendPopUpEvent("Save failed", 1024);
                 }
                 if (optPos == 4) sendPopUpEvent("uwu", 2048);
-                if (optPos == 5) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
-                if (optPos == 6) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
+                if (optPos == 5) snake_mod = true;
+                if (optPos == 6) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
+                if (optPos == 7) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
             switch (optionKeyEvent.num)

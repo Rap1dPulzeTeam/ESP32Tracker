@@ -2350,12 +2350,19 @@ void filterSetting() {
 
 uint32_t prevSampStart;
 uint32_t prevSampEnd;
+uint8_t prevSampChl;
+uint8_t prevBitsPreSamp;
 
 void prevSamp(void *arg) {
+    vTaskSuspend(SOUND_ENG);
+    memset(buffer, 0, BUFF_SIZE*sizeof(audio16BitStro));
+    i2s_zero_dma_buffer(I2S_NUM_0);
     static uint32_t prevSampStart;
     static uint32_t prevSampEnd;
     FILE *sampFile = (FILE *) arg;
+    long filePosBak = ftell(sampFile);
     fseek(sampFile, 44+prevSampStart, SEEK_SET);
+    
     vTaskDelete(NULL);
 }
 
@@ -2389,6 +2396,8 @@ void* importSamp(int8_t *sampData) {
     printf("Num Channels: %d\n", header.numChannels);
     printf("Bits Per Sample: %d\n", header.bitsPerSample);
     printf("Sub Chunk2Size: %d\n", header.subchunk2Size);
+    prevSampChl = header.numChannels;
+    prevBitsPreSamp = header.bitsPerSample;
 
     // Generate preview data
     uint32_t showCount = roundf(fileEnd / 160.0f);

@@ -48,9 +48,12 @@ uint8_t **tracker_data_pattern = NULL;
 int8_t *tracker_data_sample[33];
 uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
+
 void read_pattern_table(uint8_t head_data[1084]);
 void read_samp_info(uint8_t head_data[1084]);
+inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]);
 inline void refsPopUp();
+
 bool PopUpExist;
 // void comp_wave_ofst();
 #define CHL_NUM 4
@@ -157,6 +160,7 @@ bool dispReadConfigStatus = false;
 bool dispSdcardError = false;
 bool dispReadingFile = false;
 bool dispReadingFileError = false;
+bool dispShowEfct = false;
 bool playStat = false;
 uint32_t wave_MAX_L = 0;
 uint32_t wave_MAX_R = 0;
@@ -340,6 +344,7 @@ void backlightCtrl(void *arg) {
     printf("BACKLIGHT END\n");
     vTaskDelete(NULL);
 }
+/*
 void backlightCtrlFast(void *arg) {
     printf("BACKLIGHT FAST START\n");
     // analogWriteFrequency(22050);
@@ -351,6 +356,7 @@ void backlightCtrlFast(void *arg) {
     printf("BACKLIGHT FAST END\n");
     vTaskDelete(NULL);
 }
+*/
 
 int find_max(int size) {
     if (size <= 0) {
@@ -695,7 +701,12 @@ void display(void *arg) {
     Point food, direction = {1, 0};
     char ten[24];
     char one[24];
+    uint16_t viewTmp[4];
     SSD1306_t dev;
+    char efct[17];
+    uint8_t showTmpEFX1[4];
+    uint8_t showTmpEFX2_1[4];
+    uint8_t showTmpEFX2_2[4];
     i2c_master_init(&dev, 1, 2, -1);
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
@@ -793,6 +804,27 @@ void display(void *arg) {
                     addr[3] = (uint8_t)(data_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
                     // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
                     ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
+                    if (dispShowEfct) {
+                        if (tracker_data_pattern != NULL && tracker_data_pattern[part_table[part_point]] != NULL) {
+                            for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+                                read_part_data(tracker_data_pattern, part_table[part_point], row_point, i, viewTmp);
+                                showTmpEFX1[i] = viewTmp[2];
+                                showTmpEFX2_1[i] = hexToDecimalTens(viewTmp[3]);
+                                showTmpEFX2_2[i] = hexToDecimalOnes(viewTmp[3]);
+                            }
+                        } else {
+                            for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+                            showTmpEFX1[i] = 0;
+                            showTmpEFX2_1[i] = 0;
+                            showTmpEFX2_2[i] = 0;
+                            }
+                        }
+                        sprintf(efct, " %X%X%X %X%X%X %X%X%X %X%X%X",   showTmpEFX1[0], showTmpEFX2_1[0], showTmpEFX2_2[0],
+                                                                        showTmpEFX1[1], showTmpEFX2_1[1], showTmpEFX2_2[1],
+                                                                        showTmpEFX1[2], showTmpEFX2_1[2], showTmpEFX2_2[2],
+                                                                        showTmpEFX1[3], showTmpEFX2_1[3], showTmpEFX2_2[3]);
+                        ssd1306_display_text(&dev, 1, efct, 17, false);
+                    }
                     ssd1306_display_text(&dev, 6, ten, 16, false);
                     // ssd1306_display_text(&dev, 5, one, 16, false);
                     if (!mute[0]) {
@@ -1441,11 +1473,8 @@ int8_t fileOpt() {
                 // printf("%d ANIM %d\n", i, Anim.getAnimationY());
                 Anim.nextAnimation(9);
                 frame.display();
-                analogWrite(LCD_BK, 255-(i<<3));
             }
-            xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
             free(snap);
-            fromOtherPage = true;
             break;
         }
         free(snap);
@@ -1626,7 +1655,7 @@ int8_t windowsMenuBlocking(const char *title, uint8_t total_options, uint8_t opt
 }
 
 void MainPage() {
-    if (fromOtherPage) {fromOtherPage = false;xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);}
+    // if (fromOtherPage) {fromOtherPage = false;xTaskCreatePinnedToCore(backlightCtrlFast, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);}
     uint8_t sideMenu = 0;
     uint8_t fileMenu = 0;
     uint8_t fileMenu_last = 0;
@@ -2767,10 +2796,10 @@ void Setting() {
     bool CurChange = true;
     uint8_t AnimStep = 0;
 
-    const uint8_t SETTING_NUM = 9;
+    const uint8_t SETTING_NUM = 10;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Filter Setting", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Filter Setting", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2834,16 +2863,21 @@ void Setting() {
                     }
                     printf("MENU RETURN %d\n", menuRtrn);
                 }
-                if (optPos == 1) {MenuPos = 4; break;}
-                if (optPos == 2) wav_player();
-                if (optPos == 3) {
+                if (optPos == 1) {
+                    int8_t menuRtrn = windowsMenuBlocking("Show EFX", 2, dispShowEfct+1, 60, "OFF", "ON");
+                    dispShowEfct = menuRtrn != -1 ? menuRtrn : dispShowEfct;
+                    printf("MENU RETURN %d\n", dispShowEfct);
+                }
+                if (optPos == 2) {MenuPos = 4; break;}
+                if (optPos == 3) wav_player();
+                if (optPos == 4) {
                     if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);
                     else sendPopUpEvent("Save failed", 1024);
                 }
-                if (optPos == 4) sendPopUpEvent("uwu", 2048);
-                if (optPos == 5) snake_mod = true;
-                if (optPos == 6) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
-                if (optPos == 7) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
+                if (optPos == 5) sendPopUpEvent("uwu", 2048);
+                if (optPos == 6) snake_mod = true;
+                if (optPos == 7) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
+                if (optPos == 8) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
             }
             switch (optionKeyEvent.num)
@@ -3335,7 +3369,6 @@ void comp(void *arg) {
                             frq[chl] = arpFreq[arp_p][chl];
                         }
                     }
-                    vTaskDelay(1);
                 }
                 if (!playStat) {
                     for (uint8_t s = 0; s < 4; s++) {

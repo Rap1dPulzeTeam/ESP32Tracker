@@ -17,7 +17,10 @@ typedef struct {
     uint32_t subchunk2Size;  // 子块2大小
 } WavHeader_t;
 
+void *writeBuffer = NULL;
+
 FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, uint16_t numChannels) {
+    writeBuffer = malloc(8192);
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
         printf("Error opening file for writing.\n");
@@ -40,6 +43,7 @@ FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, u
     header.subchunk2Size = 0;
 
     fwrite(&header, sizeof(header), 1, file);
+    free(writeBuffer);
 
     return file;
 }

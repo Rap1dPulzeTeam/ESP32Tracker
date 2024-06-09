@@ -17,10 +17,10 @@ typedef struct {
     uint32_t subchunk2Size;  // 子块2大小
 } WavHeader_t;
 
-void *writeBuffer = NULL;
+// void *writeBuffer = NULL;
 
 FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, uint16_t numChannels) {
-    writeBuffer = malloc(8192);
+    // writeBuffer = malloc(8192);
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
         printf("Error opening file for writing.\n");
@@ -43,28 +43,33 @@ FILE* wav_audio_start(char *filename, uint32_t sample_rate, uint16_t bits_per, u
     header.subchunk2Size = 0;
 
     fwrite(&header, sizeof(header), 1, file);
-    free(writeBuffer);
+    // free(writeBuffer);
 
     return file;
 }
 
 void wav_audio_write(void *inbuf, size_t len, size_t *bytes_written, FILE *file) {
     *bytes_written = fwrite(inbuf, sizeof(char), len, file);
-    fseek(file, 4, SEEK_SET);  // Seek to chunkSize position
-    uint32_t currentPos = ftell(file);
-    fseek(file, 0, SEEK_END);
-    uint32_t fileSize = ftell(file);
-    uint32_t chunkSize = fileSize - 8;
-    fseek(file, 4, SEEK_SET);
-    fwrite(&chunkSize, sizeof(chunkSize), 1, file);
-
-    uint32_t dataChunkPos = 40;  // Position of subchunk2Size
-    uint32_t subchunk2Size = fileSize - 44;
-    fseek(file, dataChunkPos, SEEK_SET);
-    fwrite(&subchunk2Size, sizeof(subchunk2Size), 1, file);
-    fseek(file, 0, SEEK_END);
 }
 
 void wav_audio_close(FILE *file) {
+    // 获取文件当前大小
+    fseek(file, 0, SEEK_END);
+    uint32_t fileSize = ftell(file);
+    
+    // 计算 chunkSize 和 subchunk2Size
+    uint32_t chunkSize = fileSize - 8;
+    uint32_t subchunk2Size = fileSize - 44;
+    
+    // 写入 chunkSize
+    fseek(file, 4, SEEK_SET);
+    fwrite(&chunkSize, sizeof(chunkSize), 1, file);
+    
+    // 写入 subchunk2Size
+    fseek(file, 40, SEEK_SET);
+    fwrite(&subchunk2Size, sizeof(subchunk2Size), 1, file);
+    
+    // 关闭文件
     fclose(file);
 }
+

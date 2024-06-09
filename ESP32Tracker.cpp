@@ -620,7 +620,7 @@ void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
     limiter->soft_knee = soft_knee;
 }
 
-static inline int16_t audioLimit(Limiter *limiter, int16_t inputSample, uint16_t *limitOutComp) {
+static inline int16_t audioLimit(Limiter *limiter, int32_t inputSample, uint16_t *limitOutComp) {
     int16_t absInputSample = inputSample > 0 ? inputSample : -inputSample;
 
     if (absInputSample > limiter->threshold) {
@@ -662,10 +662,6 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
             buffer16BitStro[i].dataR *= global_vol;
         } else {
             return -1;
-        }
-        if (master_limit) {
-            buffer16BitStro[i].dataL = audioLimit(&limiter, buffer16BitStro[i].dataL, &limitStats);
-            buffer16BitStro[i].dataR = audioLimit(&limiter, buffer16BitStro[i].dataR, &limitStats);
         }
         if (master_delay) {
             buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, 4096, 0.4f, 0.8f, 0.2f, 4);
@@ -2918,7 +2914,7 @@ void display_lcd(void *arg) {
     read_samp_info(tracker_data_header);
     part_point = 0;
     xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
-    xTaskCreate(&RotaryRefs, "Rotary", 1024, NULL, 3, NULL);
+    xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
@@ -3026,8 +3022,8 @@ void comp(void *arg) {
     bool enbRetrigger[4] = {false};
     // uint8_t RetriggerPos[4] = {1};
     uint8_t RetriggerConfig[4] = {0};
-    int16_t audio_tempL;
-    int16_t audio_tempR;
+    int32_t audio_tempL;
+    int32_t audio_tempR;
     int8_t atkTick[4] = {0};
     int8_t cutTick[4] = {0};
     int8_t skipToRow = 0;
@@ -3050,12 +3046,20 @@ void comp(void *arg) {
                         buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
                     }
                 }
-                buffer16BitStro[buffPtr].dataL = (int16_t)
+                audio_tempL = (int32_t)
                         roundf(buffer_ch[chlMap[0]][buffPtr]
                                 + buffer_ch[chlMap[1]][buffPtr]);
-                buffer16BitStro[buffPtr].dataR = (int16_t)
+                audio_tempR = (int32_t)
                         roundf(buffer_ch[chlMap[2]][buffPtr]
                                 + buffer_ch[chlMap[3]][buffPtr]);
+
+                if (master_limit) {
+                    audio_tempL = audioLimit(&limiter, audio_tempL, &limitStats);
+                    audio_tempR = audioLimit(&limiter, audio_tempR, &limitStats);
+                }
+
+                buffer16BitStro[buffPtr].dataL = audio_tempL;
+                buffer16BitStro[buffPtr].dataR = audio_tempR;
                 Mtick++;
                 buffPtr++;
                 if (buffPtr >= BUFF_SIZE) {

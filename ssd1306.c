@@ -91,7 +91,7 @@ void ssd1306_display_image(SSD1306_t * dev, int page, int seg, uint8_t * images,
 	// Set to internal buffer
 	memcpy(&dev->_page[page]._segs[seg], images, width);
 }
-
+/*
 void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text_len, bool invert)
 {
 	if (page >= dev->_pages) return;
@@ -115,7 +115,27 @@ void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text
 		seg = seg + 8;
 	}
 }
+*/
+void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text_len, bool invert)
+{
+    if (page >= dev->_pages) return; // 如果页码超出范围则直接返回
+    int _text_len = text_len;
+    if (_text_len > 16) _text_len = 16; // 最多处理16个字符
 
+    uint8_t seg = 0;
+    uint8_t image[8];
+    for (uint8_t i = 0; i < _text_len; i++) {
+        memcpy(image, font8x8_basic_tr[(uint8_t)text[i]], 8); // 从字体表中获取字符的图像数据
+        if (invert) ssd1306_invert(image, 8); // 如果需要反转颜色
+        if (dev->_flip) ssd1306_flip(image, 8); // 如果需要翻转显示
+
+        // 将字符图像数据写入到缓冲区
+        for (uint8_t j = 0; j < 8; j++) {
+            dev->_page[page]._segs[seg + j] = image[j];
+        }
+        seg += 8; // 每个字符占用8个段位
+    }
+}
 // by Coert Vonk
 void 
 ssd1306_display_text_x3(SSD1306_t * dev, int page, char * text, int text_len, bool invert)

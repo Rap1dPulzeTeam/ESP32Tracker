@@ -4,7 +4,7 @@ typedef struct {
 } FileInfo;
 
 // 函数声明
-int list_directory(const char* path, FileInfo** files);
+// int list_directory(const char* path, FileInfo** files);
 
 // 列出目录中的文件和子目录，并使用 malloc 分配内存
 int list_directory(const char* path, FileInfo** files) {

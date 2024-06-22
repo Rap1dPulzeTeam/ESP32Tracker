@@ -151,7 +151,7 @@ aFrameBuffer frame(160, 128);
 
 #define SMP_RATE 48000
 #define SMP_BIT 8
-float *buffer_ch[CHL_NUM];
+int16_t *buffer_ch[CHL_NUM];
 void* buffer;
 float time_step = 1.0 / SMP_RATE;
 int8_t vol[CHL_NUM] = {0, 0, 0, 0};
@@ -186,7 +186,7 @@ typedef struct {
     bool enbCubic;
     bool enbFltr[4];
     bool enbDelay[4];
-    float cutOffFreq[4];
+    uint16_t cutOffFreq[4];
     float global_vol;
     float stroMix;
     
@@ -414,7 +414,7 @@ void initDelayBuffer() {
     }
 }
 
-float audioDelay(float inputSample, int delayLength, float decayRate, float dryMix, float wetMix, uint8_t chl) {
+int16_t audioDelay(int16_t inputSample, int delayLength, float decayRate, float dryMix, float wetMix, uint8_t chl) {
     if (delayLength >= DELAY_BUFFER_SIZE) {
         delayLength = DELAY_BUFFER_SIZE - 1;
     }
@@ -431,16 +431,16 @@ float audioDelay(float inputSample, int delayLength, float decayRate, float dryM
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
-static float lastOutputs[CHL_NUM] = {0};
 
-float lowPassFilterSingleSample(float sample, int chl, float cutoffFreqIn, uint16_t sampleRate) {
+int16_t lowPassFilterSingleSample(int16_t sample, int chl, uint16_t cutoffFreqIn, uint16_t sampleRate) {
+    static int16_t lastOutputs[CHL_NUM] = {0};
     if (chl < 0 || chl >= CHL_NUM) {
         printf("Channel index out of range.\n");
         return sample;
     }
-    if ((uint16_t)cutoffFreqIn == sampleRate || cutoffFreqIn <= 0) return sample;
-    float alpha = cutoffFreqIn / (cutoffFreqIn + sampleRate);
-    return lastOutputs[chl] = alpha * sample + (1 - alpha) * lastOutputs[chl];
+    if (cutoffFreqIn == sampleRate || cutoffFreqIn <= 0) return sample;
+    float alpha = (float)cutoffFreqIn / (cutoffFreqIn + sampleRate);
+    return lastOutputs[chl] = roundf(alpha * sample + (1 - alpha) * lastOutputs[chl]);
 }
 
 int8_t read_tracker_file(const char* path) {
@@ -618,6 +618,7 @@ int16_t temp;
 
 bool master_delay = false;
 bool master_limit = true;
+bool master_tube = false;
 
 // Limit
 typedef struct {
@@ -645,6 +646,22 @@ static inline int16_t audioLimit(Limiter *limiter, int32_t inputSample, uint16_t
         *limitOutComp = 0;
         return inputSample;
     }
+}
+
+// 电子管模拟器
+int16_t tubeSimulator(int16_t inputSample) {
+    static float flicker = 0.0f;
+    float input = inputSample / 32768.0f;
+    float whiteNoise, flickerNoise, harmonicDistortion, nonlinearDistortion;
+    whiteNoise = (((float)rand() / RAND_MAX) - 0.5f) * 0.016f;
+    flicker += (0.02f * ((float)rand() / RAND_MAX - 0.5f) - 0.01f * flicker) * 0.24f;
+    flickerNoise = flicker;
+    input += 0.05f * whiteNoise + 0.02f * flickerNoise;
+    harmonicDistortion = input + 0.5f * sinf(2.0f * M_PI_F * input) + 0.25f * sinf(3.0f * M_PI_F * input);
+    nonlinearDistortion = (2.0f / M_PI_F) * atanf(harmonicDistortion);
+    float max = fmaxf(fabsf(nonlinearDistortion), 1.0f);
+    float output = nonlinearDistortion / max;
+    return (int16_t)(output * 16384);
 }
 
 typedef struct
@@ -678,6 +695,10 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
         if (master_delay) {
             buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, 4096, 0.4f, 0.8f, 0.2f, 4);
             buffer16BitStro[i].dataR = audioDelay(buffer16BitStro[i].dataR, 4096, 0.4f, 0.8f, 0.2f, 5);
+        }
+        if (master_tube) {
+            buffer16BitStro[i].dataL = tubeSimulator(buffer16BitStro[i].dataL);
+            buffer16BitStro[i].dataR = tubeSimulator(buffer16BitStro[i].dataR);
         }
         int16_t inputL = buffer16BitStro[i].dataL;
         int16_t inputR = buffer16BitStro[i].dataR;
@@ -837,7 +858,7 @@ void display(void *arg) {
                     // ssd1306_display_text(&dev, 5, one, 16, false);
                     if (!mute[0]) {
                     for (x = 0; x < 32; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[0][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[0][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
                         if (period[0]) {
                             _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
                         }
@@ -852,7 +873,7 @@ void display(void *arg) {
                     }
                     if (!mute[1]) {
                     for (x = 32; x < 64; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[1][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[1][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
                         if (period[1]) {
                             _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
                         }
@@ -867,7 +888,7 @@ void display(void *arg) {
                     }
                     if (!mute[2]) {
                     for (x = 64; x < 96; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[2][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[2][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
                         if (period[2]) {
                             _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
                         }
@@ -882,7 +903,7 @@ void display(void *arg) {
                     }
                     if (!mute[3]) {
                     for (x = 96; x < 128; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (uint8_t)(((buffer_ch[3][(x + (contr * 128)) * 2]) / 256) + 32)&63, false);
+                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[3][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
                         if (period[3]) {
                             _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
                         }
@@ -1030,7 +1051,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     return result;
 }
 */
-inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
+inline int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
     if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
         if (config.enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
         else return 0;
@@ -1056,29 +1077,29 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
 
     int idx = int_index[chl];
     float frac = frac_index[chl];
-    float result = 0.0f;
+    int16_t result = 0;
     
     // Perform interpolation
     if (isline) {
         int nextIdx = (idx + 1) % smp_size;
         int16_t sample1 = tracker_data_sample[smp_num][idx];
         int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
-        result = (1.0f - frac) * sample1 + frac * sample2;
+        result = roundf((1.0f - frac) * sample1 + frac * sample2);
     } else if (isCos) {
         int nextIdx = (idx + 1) % smp_size;
         int16_t sample1 = tracker_data_sample[smp_num][idx];
         int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
-        float f_t = (1 - cosf(M_PI * frac)) / 2;
-        result = (1.0f - f_t) * sample1 + f_t * sample2;
+        float f_t = (1 - cosf(M_PI_F * frac)) / 2;
+        result = roundf((1.0f - f_t) * sample1 + f_t * sample2);
     } else if (isCubic) {
         int prevIdx = (idx > 0 ? idx - 1 : smp_size - 1);
         int nextIdx1 = (idx + 1) % smp_size;
         int nextIdx2 = (idx + 2) % smp_size;
-        int16_t y0 = tracker_data_sample[smp_num][prevIdx];
-        int16_t y1 = tracker_data_sample[smp_num][idx];
-        int16_t y2 = tracker_data_sample[smp_num][nextIdx1];
-        int16_t y3 = tracker_data_sample[smp_num][nextIdx2];
-        result = y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0)));
+        int8_t y0 = tracker_data_sample[smp_num][prevIdx];
+        int8_t y1 = tracker_data_sample[smp_num][idx];
+        int8_t y2 = tracker_data_sample[smp_num][nextIdx1];
+        int8_t y3 = tracker_data_sample[smp_num][nextIdx2];
+        result = roundf(y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0))));
     } else {
         result = tracker_data_sample[smp_num][idx];
     }
@@ -2433,7 +2454,7 @@ void filterSetting() {
         for (uint8_t i = 0; i < CHL_NUM; i++) {
             frame.printf("STATUS: %s\n", config.enbFltr[i] ? "ON" : "OFF");
             frame.setCursor(52, frame.getCursorY());
-            frame.printf("CUTOFF: %.1fHz\n", config.cutOffFreq[i]);
+            frame.printf("CUTOFF: %dHz\n", config.cutOffFreq[i]);
             frame.setCursor(52, frame.getCursorY()+10);
         }
         frame.display();
@@ -3111,7 +3132,7 @@ void comp(void *arg) {
     buffer = calloc(BUFF_SIZE, sizeof(audio16BitStro));
 
     for (uint8_t ch = 0; ch < CHL_NUM; ch++) {
-        buffer_ch[ch] = (float *)calloc(BUFF_SIZE, sizeof(float));
+        buffer_ch[ch] = (int16_t *)calloc(BUFF_SIZE, sizeof(int16_t));
         if (buffer_ch[ch] == NULL) {printf("WARNING! CHAN %d's BUFFER MALLOC FAILED!\n", ch);return;}
     }
     buffer16BitStro = (audio16BitStro*)buffer;
@@ -3150,12 +3171,8 @@ void comp(void *arg) {
                         buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
                     }
                 }
-                audio_tempL = (int32_t)
-                        roundf(buffer_ch[chlMap[0]][buffPtr]
-                                + buffer_ch[chlMap[1]][buffPtr]);
-                audio_tempR = (int32_t)
-                        roundf(buffer_ch[chlMap[2]][buffPtr]
-                                + buffer_ch[chlMap[3]][buffPtr]);
+                audio_tempL = buffer_ch[chlMap[0]][buffPtr] + buffer_ch[chlMap[1]][buffPtr];
+                audio_tempR = buffer_ch[chlMap[2]][buffPtr] + buffer_ch[chlMap[3]][buffPtr];
 
                 if (master_limit) {
                     audio_tempL = audioLimit(&limiter, audio_tempL, &limitStats);
@@ -3795,6 +3812,7 @@ void input(void *arg) {
             if (received == 111) {
                 snapShot = true;
             }
+            if (received == 98) master_tube = !master_tube;
             if (received == 107) {
                 vTaskPrioritySet(NULL, 5);
                 FileInfo* files = NULL;
@@ -3885,7 +3903,7 @@ void setup()
             .enbCubic = false,
             .enbFltr = {false, false, false, false},
             .enbDelay = {false, false, false, false},
-            .cutOffFreq = {0.0f, 0.0f, 0.0f, 0.0f},
+            .cutOffFreq = {0, 0, 0, 0},
             .global_vol = 0.6f,
             .stroMix = 0.4f
         };

@@ -8,6 +8,8 @@
 #include "ssd1306.h"
 #include "font8x8_basic.h"
 
+#include "bmp.h"
+
 #define TAG "SSD1306"
 
 #define PACK8 __attribute__((aligned( __alignof__( uint8_t ) ), packed ))
@@ -91,8 +93,8 @@ void ssd1306_display_image(SSD1306_t * dev, int page, int seg, uint8_t * images,
 	// Set to internal buffer
 	memcpy(&dev->_page[page]._segs[seg], images, width);
 }
-/*
-void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text_len, bool invert)
+
+void ssd1306_display_text_now(SSD1306_t * dev, int page, const char * text, int text_len, bool invert)
 {
 	if (page >= dev->_pages) return;
 	int _text_len = text_len;
@@ -115,7 +117,7 @@ void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text
 		seg = seg + 8;
 	}
 }
-*/
+
 void ssd1306_display_text(SSD1306_t * dev, int page, const char * text, int text_len, bool invert)
 {
     if (page >= dev->_pages) return; // 如果页码超出范围则直接返回

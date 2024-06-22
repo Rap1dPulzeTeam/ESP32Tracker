@@ -7,7 +7,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-// #include <pwm_audio.h>
 #include "pwm_audio.h"
 #include <math.h>
 #include <esp_log.h>
@@ -38,6 +37,7 @@
 #include "3x5font.h"
 #include "esp32/clk.h"
 #include "bfs_snake.h"
+#include "testpic.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -57,13 +57,12 @@ inline void refsPopUp();
 
 bool PopUpExist;
 // void comp_wave_ofst();
-#define CHL_NUM 4
 #define TRACKER_ROW 64
 uint8_t NUM_PATTERNS;
 #define BUFFER_PATTERNS 2
 #define NUM_ROWS 64
-#define NUM_CHANNELS 4
-#define PATTERN_SIZE (NUM_ROWS * NUM_CHANNELS * 4)
+#define CHL_NUM 4
+#define PATTERN_SIZE (NUM_ROWS * CHL_NUM * 4)
 #define BUFF_SIZE 1024
 
 bool recMod = false;
@@ -152,7 +151,7 @@ aFrameBuffer frame(160, 128);
 
 #define SMP_RATE 48000
 #define SMP_BIT 8
-float *buffer_ch[NUM_CHANNELS];
+float *buffer_ch[CHL_NUM];
 void* buffer;
 float time_step = 1.0 / SMP_RATE;
 int8_t vol[CHL_NUM] = {0, 0, 0, 0};
@@ -188,6 +187,9 @@ typedef struct {
     bool enbFltr[4];
     bool enbDelay[4];
     float cutOffFreq[4];
+    float global_vol;
+    float stroMix;
+    
 } Config_t;
 
 Config_t config;
@@ -429,10 +431,10 @@ float audioDelay(float inputSample, int delayLength, float decayRate, float dryM
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
-static float lastOutputs[NUM_CHANNELS] = {0};
+static float lastOutputs[CHL_NUM] = {0};
 
 float lowPassFilterSingleSample(float sample, int chl, float cutoffFreqIn, uint16_t sampleRate) {
-    if (chl < 0 || chl >= NUM_CHANNELS) {
+    if (chl < 0 || chl >= CHL_NUM) {
         printf("Channel index out of range.\n");
         return sample;
     }
@@ -512,7 +514,7 @@ int8_t read_tracker_file(const char* path) {
 
     printf("HEAD NOW FILE POS %ld\n", ftell(file));
     for (uint8_t i = 0; i < pat_max; i++) {
-        tracker_data_pattern[i] = (uint8_t*)malloc(1024);
+        tracker_data_pattern[i] = (uint8_t*)malloc(256*CHL_NUM);
         if (!tracker_data_pattern[i]) {
             printf("READ PATTERN MALLOC FAIL! EXITING...\n");
             for (uint8_t j = 0; j < i; j++) {
@@ -522,7 +524,7 @@ int8_t read_tracker_file(const char* path) {
             fclose(file);
             return -2;
         }
-        fread(tracker_data_pattern[i], 1, 1024, file);
+        fread(tracker_data_pattern[i], 1, 256*CHL_NUM, file);
     }
 
     printf("PAT NOW FILE POS %ld\n", ftell(file));
@@ -605,19 +607,17 @@ void comp(void *arg);
 void load(void *arg);
 // **************************INIT*END****************************
 
-int16_t period[4] = {0, 0, 0, 0};
-float frq[4] = {0, 0, 0, 0};
+int16_t period[CHL_NUM] = {0, 0, 0, 0};
+float frq[CHL_NUM] = {0, 0, 0, 0};
 float frac_index[CHL_NUM] = {0, 0, 0, 0};
 uint32_t int_index[CHL_NUM] = {0, 0, 0, 0};
 bool view_mode = false;
 uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
-float global_vol = 1.0f;
 
 int16_t temp;
 
 bool master_delay = false;
 bool master_limit = true;
-float stroMix = 0.45f;
 
 // Limit
 typedef struct {
@@ -670,8 +670,8 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
     audio16BitStro *buffer16BitStro = (audio16BitStro*)src;
     for (uint16_t i = 0; i < len; i++) {
         if (size == 4) {
-            buffer16BitStro[i].dataL *= global_vol;
-            buffer16BitStro[i].dataR *= global_vol;
+            buffer16BitStro[i].dataL *= config.global_vol;
+            buffer16BitStro[i].dataR *= config.global_vol;
         } else {
             return -1;
         }
@@ -681,8 +681,8 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
         }
         int16_t inputL = buffer16BitStro[i].dataL;
         int16_t inputR = buffer16BitStro[i].dataR;
-        buffer16BitStro[i].dataL = (int16_t)((1.0f - stroMix) * inputL + stroMix * inputR);
-        buffer16BitStro[i].dataR = (int16_t)((1.0f - stroMix) * inputR + stroMix * inputL);
+        buffer16BitStro[i].dataL = (int16_t)((1.0f - config.stroMix) * inputL + config.stroMix * inputR);
+        buffer16BitStro[i].dataR = (int16_t)((1.0f - config.stroMix) * inputR + config.stroMix * inputL);
         wave_MAX_L += abs(buffer16BitStro[i].dataL);
         wave_MAX_R += abs(buffer16BitStro[i].dataR);
     }
@@ -709,28 +709,28 @@ void display(void *arg) {
     Point food, direction = {1, 0};
     char ten[24];
     char one[24];
-    uint16_t viewTmp[4];
+    uint16_t viewTmp[CHL_NUM];
     SSD1306_t dev;
     char efct[17];
-    uint8_t showTmpEFX1[4];
-    uint8_t showTmpEFX2_1[4];
-    uint8_t showTmpEFX2_2[4];
+    uint8_t showTmpEFX1[CHL_NUM];
+    uint8_t showTmpEFX2_1[CHL_NUM];
+    uint8_t showTmpEFX2_2[CHL_NUM];
     i2c_master_init(&dev, 1, 2, -1);
     ssd1306_init(&dev, 128, 64);
     ssd1306_clear_screen(&dev, false);
     ssd1306_contrast(&dev, 0xff);
-    ssd1306_display_text(&dev, 0, "Welcome to", 11, false);
-    ssd1306_display_text(&dev, 1, "ESP32Tracker", 13, false);
-    ssd1306_display_text(&dev, 2, "BOOTING....", 12, false);
+    ssd1306_display_text_now(&dev, 0, "Welcome to", 11, false);
+    ssd1306_display_text_now(&dev, 1, "ESP32Tracker", 13, false);
+    ssd1306_display_text_now(&dev, 2, "BOOTING....", 12, false);
     vTaskDelay(32);
     for (;;) {
         vTaskDelay(32);
         if (dispRedy) break;
     }
-    ssd1306_display_text(&dev, 3, "READ CONFIG....", 16, false);
+    ssd1306_display_text_now(&dev, 3, "READ CONFIG....", 16, false);
     for (;;) {
         vTaskDelay(32);
-        if (dispSdcardError) ssd1306_display_text(&dev, 4, "SDCARD ERROR!!!", 16, false);
+        if (dispSdcardError) ssd1306_display_text_now(&dev, 4, "SDCARD ERROR!!!", 16, false);
         if (dispReadConfigStatus) break;
     }
     vTaskDelay(32);
@@ -760,7 +760,7 @@ void display(void *arg) {
             for (uint8_t i = 0; i < 7; i++) {
                 ssd1306_display_text(&dev, i, "               ", 16, false);
             }
-            ssd1306_display_text(&dev, 7, dispReadingFileError ? "READ FILE ERROR" : "READING FILE...", 16, false);
+            ssd1306_display_text_now(&dev, 7, dispReadingFileError ? "READ FILE ERROR" : "READING FILE...", 16, false);
             vTaskDelay(128);
         } else {
             if (snake_mod) {
@@ -794,15 +794,15 @@ void display(void *arg) {
                     switch (RTY_MOD)
                     {
                     case RTY_VOL:
-                        sprintf(ten, " VOL: %d    ", (int8_t)(global_vol*100));
+                        sprintf(ten, " VOL: %d    ", (int8_t)(config.global_vol*100));
                         break;
                     
                     case RTY_MIX:
-                        sprintf(ten, " MIX: %d    ", (int8_t)(stroMix*100));
+                        sprintf(ten, " MIX: %d    ", (int8_t)(config.stroMix*100));
                         break;
 
                     case RTY_CPU:
-                        sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(stroMix*100));
+                        sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(config.stroMix*100));
                         break;
                     }
 
@@ -814,14 +814,14 @@ void display(void *arg) {
                     ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
                     if (dispShowEfct) {
                         if (tracker_data_pattern != NULL && tracker_data_pattern[part_table[part_point]] != NULL) {
-                            for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+                            for (uint8_t i = 0; i < CHL_NUM; i++) {
                                 read_part_data(tracker_data_pattern, part_table[part_point], row_point, i, viewTmp);
                                 showTmpEFX1[i] = viewTmp[2];
                                 showTmpEFX2_1[i] = hexToDecimalTens(viewTmp[3]);
                                 showTmpEFX2_2[i] = hexToDecimalOnes(viewTmp[3]);
                             }
                         } else {
-                            for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+                            for (uint8_t i = 0; i < CHL_NUM; i++) {
                             showTmpEFX1[i] = 0;
                             showTmpEFX2_1[i] = 0;
                             showTmpEFX2_2[i] = 0;
@@ -907,7 +907,7 @@ void display(void *arg) {
 inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]) {
     uint8_t* pattern_data = tracker_data[pattern_index];
 
-    uint16_t byte_index = row_index * NUM_CHANNELS * 4 + channel_index * 4;
+    uint16_t byte_index = row_index * CHL_NUM * 4 + channel_index * 4;
     // Byte structure for tracker data:
     // +----------------+--------------+----------------+-------------+
     // |    byte 1      |    byte 2    |     byte 3     |    byte 4   |
@@ -939,7 +939,7 @@ inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_
 void write_part_data(uint8_t **tracker_data, uint8_t pattern_index, uint8_t chl, uint8_t row, uint16_t row_data[4]) {
     uint8_t* pattern_data = tracker_data[pattern_index];
 
-    uint16_t byte_index = row * NUM_CHANNELS * 4 + chl * 4;
+    uint16_t byte_index = row * CHL_NUM * 4 + chl * 4;
 
     pattern_data[byte_index] = (row_data[1] & 0xF0) | ((row_data[0] >> 8) & 0x0F);
     pattern_data[byte_index + 1] = row_data[0] & 0xFF;
@@ -948,9 +948,9 @@ void write_part_data(uint8_t **tracker_data, uint8_t pattern_index, uint8_t chl,
 }
 
 // AUDIO DATA COMP START ----------------------------------------
-uint8_t arpNote[2][4] = {0};
-float arpFreq[3][4];
-int8_t lastVol[4];
+uint8_t arpNote[2][CHL_NUM] = {0};
+float arpFreq[3][CHL_NUM];
+int8_t lastVol[CHL_NUM];
 float sin_index;
 /*
 inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
@@ -1792,7 +1792,7 @@ void MainPage() {
 
         if (!ChlMenuPos && !sideMenu) {
             if (readTouchPadKeyEvent == pdTRUE) if (editMod && touchPadEvent.status == KEY_ATTACK) {
-                uint16_t tmpData[4];
+                uint16_t tmpData[CHL_NUM];
                 read_part_data(tracker_data_pattern, part_table[part_point], ChlPos-1, row_point, tmpData);
                 tmpData[0] = midi_period_table[inputOct][touchPadEvent.num];
                 tmpData[1] = smp_num[ChlPos-1];
@@ -2152,7 +2152,7 @@ void ChlEdit() {
     frame.drawFastVLine(78, 0, 128, 0x6b7e);
     frame.drawFastVLine(79, 0, 128, 0xad7f);
     int8_t EditPos = 0;
-    uint16_t viewTmp[4];
+    uint16_t viewTmp[CHL_NUM];
     bool enbRec = false;
     key_event_t optionKeyEvent;
     for (;;) {
@@ -2423,14 +2423,14 @@ void filterSetting() {
         if (fltrPos) frame.fillRect(0, (fltrPos*26)+26, 160, 25, 0x528a);
         else frame.fillRect(0, (fltrPos*26)+27, 160, 24, 0x528a);
         frame.drawFastVLine(48, 27, 101, ST7735_WHITE);
-        for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+        for (uint8_t i = 0; i < CHL_NUM; i++) {
             frame.printf("CHL%d\n", i+1);
             frame.setCursor(0, frame.getCursorY()+10);
             frame.drawFastHLine(0, frame.getCursorY()-6, 160, ST7735_WHITE);
         }
         frame.setTextSize(0);
         frame.setCursor(52, 31);
-        for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
+        for (uint8_t i = 0; i < CHL_NUM; i++) {
             frame.printf("STATUS: %s\n", config.enbFltr[i] ? "ON" : "OFF");
             frame.setCursor(52, frame.getCursorY());
             frame.printf("CUTOFF: %.1fHz\n", config.cutOffFreq[i]);
@@ -2786,7 +2786,7 @@ void SampEdit() {
         }
 
         if (tracker_data_sample[show_num] != NULL) {
-            for (uint8_t chl = 0; chl < NUM_CHANNELS; chl++) {
+            for (uint8_t chl = 0; chl < CHL_NUM; chl++) {
                 if (smp_num[chl] == show_num) frame.drawFastVLine(43+(int_index[chl] * (58.5f / samp_info[smp_num[chl]].len)), 64, 64, 0xc618);
             }
         } else {
@@ -2964,7 +2964,17 @@ void Setting() {
                     if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);
                     else sendPopUpEvent("Save failed", 1024);
                 }
-                if (optPos == 5) sendPopUpEvent("uwu", 2048);
+                // if (optPos == 5) sendPopUpEvent("uwu", 2048);
+                if (optPos == 5) {
+                    frame.drawRGBBitmap(0, 10, test_image, 160, 106);
+                    frame.display();
+                    vTaskDelay(256);
+                    for (;;) {
+                        if (readOptionKeyEvent == pdTRUE) break;
+                        frame.display();
+                        vTaskDelay(256);
+                    }
+                }
                 if (optPos == 6) snake_mod = true;
                 if (optPos == 7) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 8) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
@@ -3035,7 +3045,7 @@ void display_lcd(void *arg) {
 bool TestNote = false;
 uint8_t chlMap[CHL_NUM] = {/*L*/0, 3, /*R*/1, 2};
 
-const int8_t channel_type[8] = {0, 0, 0, 0, 1, 1, 1, 1}; // 0: SAMPLER, 1: SYNTH, 2: UART OUT
+const int8_t channel_type[CHL_NUM+4] = {0, 0, 0, 0, 0, 0, 0, 0}; // 0: SAMPLER, 1: SYNTH, 2: UART OUT
 
 void triggerSamplePlayback(int16_t period_input, uint8_t velocity, uint8_t channel, uint16_t sampOfst) {
     if (sampOfst) set_index(channel, sampOfst);
@@ -3069,57 +3079,57 @@ void triggerNote(int16_t period, uint8_t velocity, uint8_t channel, uint16_t opt
             printf("Unknown channel type for channel %d [%d]\n", channel, channel_type[channel]);
     }
 }
-
 // COMP TASK START ----------------------------------------------
 void comp(void *arg) {
     uint8_t tick_time = 0;
     uint8_t tick_speed = 6;
     uint8_t arp_p = 0;
-    bool enbArp[4] = {false};
-    uint8_t volUp[4] = {0};
-    uint8_t volDown[4] = {0};
-    uint16_t portToneSpeed[4] = {0};
-    uint16_t portToneTemp[4] = {0};
-    uint16_t portToneSource[4] = {0};
-    uint16_t portToneTarget[4] = {0};
-    bool enbPortTone[4] = {false};
-    uint16_t lastNote[4] = {false};
-    bool enbSlideUp[4] = {false};
-    uint8_t SlideUp[4] = {false};
-    bool enbSlideDown[4] = {false};
-    uint8_t SlideDown[4] = {false};
-    bool enbVibrato[4] = {false};
-    uint8_t VibratoSpeed[4];
-    uint8_t VibratoDepth[4];
-    uint8_t VibratoPos[4] = {32};
-    bool enbTremolo[4] = {false};
-    uint8_t TremoloPos[4] = {32};
-    uint8_t TremoloSpeed[4] = {0};
-    uint8_t TremoloDepth[4] = {0};
-    int VibratoItem[4] = {0};
+    bool enbArp[CHL_NUM] = {false};
+    uint8_t volUp[CHL_NUM] = {0};
+    uint8_t volDown[CHL_NUM] = {0};
+    uint16_t portToneSpeed[CHL_NUM] = {0};
+    uint16_t portToneTemp[CHL_NUM] = {0};
+    uint16_t portToneSource[CHL_NUM] = {0};
+    uint16_t portToneTarget[CHL_NUM] = {0};
+    bool enbPortTone[CHL_NUM] = {false};
+    uint16_t lastNote[CHL_NUM] = {false};
+    bool enbSlideUp[CHL_NUM] = {false};
+    uint8_t SlideUp[CHL_NUM] = {false};
+    bool enbSlideDown[CHL_NUM] = {false};
+    uint8_t SlideDown[CHL_NUM] = {false};
+    bool enbVibrato[CHL_NUM] = {false};
+    uint8_t VibratoSpeed[CHL_NUM];
+    uint8_t VibratoDepth[CHL_NUM];
+    uint8_t VibratoPos[CHL_NUM] = {32};
+    bool enbTremolo[CHL_NUM] = {false};
+    uint8_t TremoloPos[CHL_NUM] = {32};
+    uint8_t TremoloSpeed[CHL_NUM] = {0};
+    uint8_t TremoloDepth[CHL_NUM] = {0};
+    int VibratoItem[CHL_NUM] = {0};
     uint16_t Mtick = 0;
     uint16_t TICK_NUL = roundf(SMP_RATE / (125 * 0.4f));
     buffer = calloc(BUFF_SIZE, sizeof(audio16BitStro));
-    // buffer = realloc(buffer, TICK_NUL * sizeof(audio16BitStro));
-    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+
+    for (uint8_t ch = 0; ch < CHL_NUM; ch++) {
         buffer_ch[ch] = (float *)calloc(BUFF_SIZE, sizeof(float));
+        if (buffer_ch[ch] == NULL) {printf("WARNING! CHAN %d's BUFFER MALLOC FAILED!\n", ch);return;}
     }
     buffer16BitStro = (audio16BitStro*)buffer;
-    uint8_t volTemp[4];
-    uint16_t OfstCfg[4];
+    uint8_t volTemp[CHL_NUM];
+    uint16_t OfstCfg[CHL_NUM];
     uint8_t rowLoopStart = 0;
     int8_t rowLoopCont = 0;
     bool enbRowLoop = false;
     printf("READ!\n");
     vTaskDelay(128);
     uint8_t chl;
-    bool enbRetrigger[4] = {false};
-    // uint8_t RetriggerPos[4] = {1};
-    uint8_t RetriggerConfig[4] = {0};
+    bool enbRetrigger[CHL_NUM] = {false};
+    // uint8_t RetriggerPos[CHL_NUM] = {1};
+    uint8_t RetriggerConfig[CHL_NUM] = {0};
     int32_t audio_tempL;
     int32_t audio_tempR;
-    int8_t atkTick[4] = {0};
-    int8_t cutTick[4] = {0};
+    int8_t atkTick[CHL_NUM] = {0};
+    int8_t cutTick[CHL_NUM] = {0};
     int8_t skipToRow = 0;
     uint16_t buffPtr = 0;
     dispReadConfigStatus = true;
@@ -3133,7 +3143,7 @@ void comp(void *arg) {
             Mtick = 0;
             // buffer = realloc(buffer, TICK_NUL * sizeof(audio16BitStro));
             for (;;) {
-                for(chl = 0; chl < 4; chl++) {
+                for(chl = 0; chl < CHL_NUM; chl++) {
                     if (samp_info[smp_num[chl]].loopLen > 1) {
                         buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
                     } else {
@@ -3168,7 +3178,7 @@ void comp(void *arg) {
                     tick_time++;
                     arp_p++;
                     if (tick_time != tick_speed) {
-                        for(chl = 0; chl < 4; chl++) {
+                        for(chl = 0; chl < CHL_NUM; chl++) {
                             if (enbSlideUp[chl]) {
                                 // printf("SLIDE UP %d", period[chl]);
                                 period[chl] -= SlideUp[chl];
@@ -3217,7 +3227,7 @@ void comp(void *arg) {
                         }
                     } else if (tick_time == tick_speed) {
                         tick_time = 0;
-                        for (chl = 0; chl < 4; chl++) {
+                        for (chl = 0; chl < CHL_NUM; chl++) {
                             read_part_data(tracker_data_pattern, part_table[part_point], row_point, chl, part_buffer);
                             if (part_buffer[2] == 13) {
                                 if (part_buffer[3]) {
@@ -3444,7 +3454,7 @@ void comp(void *arg) {
                             printf("NOW %d\n", part_point);
                         }
                     }
-                    for (chl = 0; chl < 4; chl++) {
+                    for (chl = 0; chl < CHL_NUM; chl++) {
                         if (period[chl] != 0) {
                             frq[chl] = patch_table[samp_info[smp_num[chl]].finetune] / (float)(period[chl] + VibratoItem[chl]);
                         } else {
@@ -3609,13 +3619,13 @@ void IRAM_ATTR rotate(ESPRotary& rotary) {
     switch (RTY_MOD)
     {
     case RTY_VOL:
-        if (rtyRel == 255) global_vol += 0.01;
-        else global_vol -= 0.01;
+        if (rtyRel == 255) config.global_vol += 0.01;
+        else config.global_vol -= 0.01;
         break;
     
     case RTY_MIX:
-        if (rtyRel == 255) stroMix += 0.01;
-        else stroMix -= 0.01;
+        if (rtyRel == 255) config.stroMix += 0.01;
+        else config.stroMix -= 0.01;
         break;
 
     case RTY_CPU:
@@ -3826,6 +3836,10 @@ void input(void *arg) {
     }
 }
 
+void Bootanimation(void *arg) {
+
+}
+
 void setup()
 {
     pinMode(LCD_BK, OUTPUT);
@@ -3837,7 +3851,7 @@ void setup()
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
     frame.setFont(&abcd);
-    initLimiter(&limiter, 16384*global_vol, 16380*global_vol);
+    initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     popUpEventQueue = xQueueCreate(4, sizeof(popUpEvent_t));
@@ -3871,7 +3885,9 @@ void setup()
             .enbCubic = false,
             .enbFltr = {false, false, false, false},
             .enbDelay = {false, false, false, false},
-            .cutOffFreq = {0.0f, 0.0f, 0.0f, 0.0f}
+            .cutOffFreq = {0.0f, 0.0f, 0.0f, 0.0f},
+            .global_vol = 0.6f,
+            .stroMix = 0.4f
         };
         writeConfig(&config);
     }

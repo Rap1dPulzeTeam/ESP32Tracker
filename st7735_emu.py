@@ -53,10 +53,10 @@ class FrameBuffer:
     def printf(self, format_str, *args):
         text = format_str % args
         for char in text:
-            if char == '\n':  # 检测到换行字符
+            if char == '\n':
                 self.cursor_x = 0
                 self.cursor_y += 8 * self.text_size
-                continue  # 继续下一个字符的处理
+                continue
 
             if self.cursor_x >= self.width:
                 self.cursor_x = 0
@@ -138,7 +138,6 @@ class FrameBuffer:
             self.tk_image = ImageTk.PhotoImage(scaled_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
         
-        # 使用线程来更新显示，防止界面冻结
         threading.Thread(target=update).start()
 
 class App:
@@ -146,11 +145,9 @@ class App:
         self.root = root
         self.root.title("ST7735 EMU")
 
-        # 创建菜单栏
         menubar = tk.Menu(root)
         root.config(menu=menubar)
         
-        # 创建文件菜单
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Save code", command=self.save_code)

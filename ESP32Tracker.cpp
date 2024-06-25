@@ -35,9 +35,10 @@
 #include <Adafruit_MPR121.h>
 #include "abcd.h"
 #include "3x5font.h"
+#include "JetBrainsMonoNL_MediumItalic8pt7b.h"
 #include "esp32/clk.h"
 #include "bfs_snake.h"
-#include "testpic.h"
+#include "trackerIcon.h"
 
 #define MOUNT_POINT "/sdcard"
 
@@ -55,7 +56,7 @@ void read_samp_info(uint8_t head_data[1084]);
 inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]);
 inline void refsPopUp();
 
-bool PopUpExist;
+bool PopUpExist = false;
 // void comp_wave_ofst();
 #define TRACKER_ROW 64
 uint8_t NUM_PATTERNS;
@@ -115,6 +116,11 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_B 8
 #define KEY_C 9
 #define LCD_BK 9
+
+#define SET_DELAY 0
+#define SET_FILTER 1
+#define SET_LIMIT 2
+#define SET_TUBES 3
 
 bool snapShot = false;
 
@@ -181,16 +187,25 @@ bool MAX_COMP_FINISH = false;
 #define CONFIG_FILE_PATH "/spiffs/esp32tracker.config"
 
 typedef struct {
+    int Length;
+    float decayRate;
+    float dryMix;
+    float wetMix;
+} delay_config_t;
+
+typedef struct {
     bool enbLine;
     bool enbCos;
     bool enbCubic;
     bool enbFltr[4];
     bool enbDelay[4];
+    delay_config_t master_delay_config;
     uint16_t cutOffFreq[4];
     float global_vol;
     float stroMix;
-    
 } Config_t;
+
+delay_config_t channel_delay_config[4];
 
 Config_t config;
 
@@ -400,38 +415,37 @@ bool mute[4] = {false, false, false, false};
 
 #define DELAY_BUFFER_SIZE 4096
 
-float delayBuffer[6][4096];
-int delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
+int16_t delayBuffer[6][4096];
+int8_t delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
 
 void initDelayBuffer() {
     for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
-        delayBuffer[0][i] = 0.0f;
-        delayBuffer[1][i] = 0.0f;
-        delayBuffer[2][i] = 0.0f;
-        delayBuffer[3][i] = 0.0f;
-        delayBuffer[4][i] = 0.0f;
-        delayBuffer[5][i] = 0.0f;
+        delayBuffer[0][i] = 0;
+        delayBuffer[1][i] = 0;
+        delayBuffer[2][i] = 0;
+        delayBuffer[3][i] = 0;
+        delayBuffer[4][i] = 0;
+        delayBuffer[5][i] = 0;
     }
 }
 
-int16_t audioDelay(int16_t inputSample, int delayLength, float decayRate, float dryMix, float wetMix, uint8_t chl) {
-    if (delayLength >= DELAY_BUFFER_SIZE) {
-        delayLength = DELAY_BUFFER_SIZE - 1;
+int16_t audioDelay(int16_t inputSample, delay_config_t delay_config, uint8_t chl) {
+    if (delay_config.Length >= DELAY_BUFFER_SIZE) {
+        delay_config.Length = DELAY_BUFFER_SIZE - 1;
     }
 
-    int readIndex = delayWriteIndex[chl] - delayLength;
+    int readIndex = delayWriteIndex[chl] - delay_config.Length;
     if (readIndex < 0) {
         readIndex += DELAY_BUFFER_SIZE;
     }
 
-    float outputSample = delayBuffer[chl][readIndex];
-    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + decayRate * outputSample;
+    int16_t outputSample = delayBuffer[chl][readIndex];
+    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + delay_config.decayRate * outputSample;
     delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
-    return dryMix * inputSample + wetMix * outputSample;
+    return delay_config.dryMix * inputSample + delay_config.wetMix * outputSample;
 }
 
 // 适用于每次输入单个样本点的一阶低通滤波器
-
 int16_t lowPassFilterSingleSample(int16_t sample, int chl, uint16_t cutoffFreqIn, uint16_t sampleRate) {
     static int16_t lastOutputs[CHL_NUM] = {0};
     if (chl < 0 || chl >= CHL_NUM) {
@@ -693,8 +707,8 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
             return -1;
         }
         if (master_delay) {
-            buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, 4096, 0.4f, 0.8f, 0.2f, 4);
-            buffer16BitStro[i].dataR = audioDelay(buffer16BitStro[i].dataR, 4096, 0.4f, 0.8f, 0.2f, 5);
+            buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, config.master_delay_config, 4);
+            buffer16BitStro[i].dataR = audioDelay(buffer16BitStro[i].dataR, config.master_delay_config, 5);
         }
         if (master_tube) {
             buffer16BitStro[i].dataL = tubeSimulator(buffer16BitStro[i].dataL);
@@ -1053,7 +1067,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
 */
 inline int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
     if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
-        if (config.enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
+        if (config.enbDelay[chl]) return audioDelay(0, channel_delay_config[chl], chl);
         else return 0;
     }
 
@@ -1112,7 +1126,7 @@ inline int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uin
         result = lowPassFilterSingleSample(result, chl, config.cutOffFreq[chl], SMP_RATE);
     }
     if (config.enbDelay[chl]) {
-        result = audioDelay(result, 2048, 0.23f, 0.8f, 0.2f, chl);
+        result = audioDelay(result, channel_delay_config[chl], chl);
     }
 
     return result;
@@ -2326,6 +2340,8 @@ int parseWavHeader(FILE* file, WavHeader_t* header) {
     return 0;
 }
 
+
+
 void wav_player() {
     vTaskSuspend(SOUND_ENG);
     view_mode = true;
@@ -2422,6 +2438,90 @@ void wav_player() {
     vTaskResume(SOUND_ENG);
     view_mode = false;
     vTaskDelay(64);
+}
+
+void effectSettingOption(uint8_t index) {
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
+    frame.setCursor(1, 11);
+    frame.setTextSize(2);
+    frame.fillRect(0, 10, 160, 16, 0x39c7);
+    frame.drawFastHLine(0, 26, 160, 0xa6bf);
+    if (index == SET_DELAY) {
+    frame.printf("DELAY\n");
+    frame.setTextSize(0);
+    for (;;) {
+
+    }}
+    if (index == SET_FILTER) {for (;;) {
+        
+    }}
+    if (index == SET_LIMIT) {for (;;) {
+        
+    }}
+    if (index == SET_TUBES) {for (;;) {
+        
+    }}
+}
+
+void masterEffectSetting() {
+    const uint16_t *icon_list[4] = {icon_delay, icon_filter, icon_limit, icon_tubes};
+    const char *name_list[4] = {"DELAY", "FILTER", "LIMIT", "TUBES"};
+    int8_t optPos = 0;
+    frame.setFont(NULL);
+    frame.drawFastHLine(0, 9, 160, 0xe71c);
+    frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
+    frame.setCursor(1, 11);
+    frame.setTextSize(2);
+    frame.fillRect(0, 10, 160, 16, 0x39c7);
+    frame.printf("EFFECTORS\n");
+    frame.setTextSize(0);
+    frame.drawFastHLine(0, 26, 160, 0xa6bf);
+    key_event_t optionKeyEvent;
+    for (;;) {
+        for (uint8_t idx = 0; idx < 4; idx++) {
+            uint8_t x = idx*40;
+            frame.fillRect(x, 27, 40, 101, optPos == idx ? 0x630c : 0x0000);
+            frame.drawRGBBitmap(4+x, 32, icon_list[idx], 32, 32);
+            frame.setCursor(3+x, 68);
+            frame.print(name_list[idx]);
+        }
+        for (uint8_t x = 1; x < 4; x++) {
+            frame.drawFastVLine(x*40, 27, 101, 0xffff);
+        }
+        frame.display();
+        vTaskDelay(4);
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == 127) {MenuPos = 3; break;};
+            switch (optionKeyEvent.num)
+            {
+            case KEY_L:
+                printf("KEY_L\n");
+                optPos--;
+                if (optPos < 0) optPos = 3;
+                break;
+
+            case KEY_R:
+                optPos++;
+                if (optPos > 3) optPos = 0;
+                printf("KEY_R\n");
+                break;
+            
+            case KEY_UP:
+                printf("KEY_UP\n");
+                break;
+
+            case KEY_DOWN:
+                printf("KEY_DOWN\n");
+                break;
+            
+            case KEY_OK:
+                printf("KEY_OK\n");
+                break;
+            }
+        }
+    }
+    frame.setFont(&abcd);
 }
 
 void filterSetting() {
@@ -2910,7 +3010,7 @@ void Setting() {
     const uint8_t SETTING_NUM = 10;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Filter Setting", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Master Effect", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -2979,23 +3079,13 @@ void Setting() {
                     dispShowEfct = menuRtrn != -1 ? menuRtrn : dispShowEfct;
                     printf("MENU RETURN %d\n", dispShowEfct);
                 }
-                if (optPos == 2) {MenuPos = 4; break;}
+                if (optPos == 2) {MenuPos = 6; break;}
                 if (optPos == 3) wav_player();
                 if (optPos == 4) {
                     if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);
                     else sendPopUpEvent("Save failed", 1024);
                 }
-                // if (optPos == 5) sendPopUpEvent("uwu", 2048);
-                if (optPos == 5) {
-                    frame.drawRGBBitmap(0, 10, test_image, 160, 106);
-                    frame.display();
-                    vTaskDelay(256);
-                    for (;;) {
-                        if (readOptionKeyEvent == pdTRUE) break;
-                        frame.display();
-                        vTaskDelay(256);
-                    }
-                }
+                if (optPos == 5) sendPopUpEvent("uwu", 2048);
                 if (optPos == 6) snake_mod = true;
                 if (optPos == 7) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 8) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
@@ -3060,6 +3150,10 @@ void display_lcd(void *arg) {
         else if (MenuPos == 5) {
             MainReDraw();
             SampEdit();
+        }
+        else if (MenuPos == 6) {
+            MainReDraw();
+            masterEffectSetting();
         }
     }
 }
@@ -3854,8 +3948,48 @@ void input(void *arg) {
     }
 }
 
-void Bootanimation(void *arg) {
-
+void Bootanimation() {
+    frame.setTextWrap(false);
+    Animation anim = Animation();
+    anim.initAnimation(152, 48, 22, 48, 32);
+    frame.setTextSize(0);
+    analogWrite(LCD_BK, 255);
+    for (uint8_t i = 0; i < 24; i++) {
+        frame.setFont(&JetBrainsMonoNL_MediumItalic8pt7b);
+        frame.fillScreen(0x0000);
+        frame.setCursor(anim.currentX, anim.currentY);
+        frame.printf("ESP32Tracker");
+        frame.setFont(NULL);
+        frame.setCursor(anim.currentX, anim.currentY+24);
+        frame.printf(" libchara-dev");
+        frame.display();
+        anim.nextAnimation(6);
+    }
+    int16_t oX = anim.currentX;
+    for (uint8_t i = 0; i < 16; i++) {
+        frame.setFont(&JetBrainsMonoNL_MediumItalic8pt7b);
+        frame.fillScreen(0x0000);
+        frame.setCursor(oX--, 48);
+        frame.printf("ESP32Tracker");
+        frame.setFont(NULL);
+        frame.setCursor(oX, 72);
+        frame.printf(" libchara-dev");
+        frame.display();
+        vTaskDelay(4);
+    }
+    anim.initAnimation(oX, 48, -130, 48, 32);
+    for (uint8_t i = 0; i < 32; i++) {
+        frame.setFont(&JetBrainsMonoNL_MediumItalic8pt7b);
+        frame.fillScreen(0x0000);
+        frame.setCursor(anim.currentX, anim.currentY);
+        frame.printf("ESP32Tracker");
+        frame.setFont(NULL);
+        frame.setCursor(anim.currentX, anim.currentY+24);
+        frame.printf(" libchara-dev");
+        frame.display();
+        anim.nextAnimation(6);
+    }
+    frame.setFont(NULL);
 }
 
 void setup()
@@ -3863,11 +3997,12 @@ void setup()
     pinMode(LCD_BK, OUTPUT);
     analogWriteFrequency(22050);
     analogWrite(LCD_BK, 0);
-    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0); 
+    xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     tft.initR(INITR_BLACKTAB);
     tft.setSPISpeed(79000000);
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
+    Bootanimation();
     frame.setFont(&abcd);
     initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));

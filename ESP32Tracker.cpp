@@ -688,12 +688,14 @@ typedef struct
 i2s_write_config_t i2s_write_config;
 TaskHandle_t I2S_WRITE_H;
 
-void i2s_write_task(void *arg) { for (;;) {
-    if (i2s_write_config.write_src != NULL) 
-        i2s_write(I2S_NUM_0, i2s_write_config.write_src, i2s_write_config.write_size, &wrin, portMAX_DELAY);
-    i2s_write_config.status = false;
-    vTaskSuspend(NULL);
-}}
+void i2s_write_task(void *arg) {
+    for (;;) {
+        if (i2s_write_config.write_src != NULL) 
+            i2s_write(I2S_NUM_0, i2s_write_config.write_src, i2s_write_config.write_size, &wrin, portMAX_DELAY);
+        i2s_write_config.status = false;
+        vTaskSuspend(NULL);
+    }
+}
 
 Limiter limiter;
 
@@ -1633,6 +1635,7 @@ loadRef:
 }
 
 void newFileInit() {
+    vTaskSuspend(SOUND_ENG);
     part_point = 0;
     row_point = 0;
     reset_all_index();
@@ -1650,6 +1653,7 @@ void newFileInit() {
     frame.drawFastVLine(112, 19, 24, ST7735_WHITE);
     frame.fillRect(0, 10, 160, 8, 0x2104);
     row_point = 0;
+    vTaskResume(SOUND_ENG);
 }
 
 uint16_t showTmpNote;
@@ -2053,7 +2057,6 @@ void MainPage() {
                         }
                         if (fileMenu == 1) {
                             playStat = false;
-                            vTaskDelay(16);
                             sideMenu = 0;
                             fileMenu = 0;
                             newFileInit();
@@ -2340,8 +2343,6 @@ int parseWavHeader(FILE* file, WavHeader_t* header) {
     return 0;
 }
 
-
-
 void wav_player() {
     vTaskSuspend(SOUND_ENG);
     view_mode = true;
@@ -2440,28 +2441,51 @@ void wav_player() {
     vTaskDelay(64);
 }
 
-void effectSettingOption(uint8_t index) {
+void effectSettingDelay(uint8_t index) {
+    int8_t xpos = 0;
+    int8_t ypos = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
     frame.setCursor(1, 11);
     frame.setTextSize(2);
     frame.fillRect(0, 10, 160, 16, 0x39c7);
-    frame.drawFastHLine(0, 26, 160, 0xa6bf);
-    if (index == SET_DELAY) {
     frame.printf("DELAY\n");
+    frame.drawFastHLine(0, 26, 160, 0xa6bf);
     frame.setTextSize(0);
+    key_event_t optionKeyEvent;
     for (;;) {
+        if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
+            if (optionKeyEvent.num == 127) {MenuPos = 3; break;};
+            switch (optionKeyEvent.num)
+            {
+            case KEY_L:
+                xpos--;
+                if (xpos < 0) xpos = 3;
+                break;
 
-    }}
-    if (index == SET_FILTER) {for (;;) {
-        
-    }}
-    if (index == SET_LIMIT) {for (;;) {
-        
-    }}
-    if (index == SET_TUBES) {for (;;) {
-        
-    }}
+            case KEY_R:
+                xpos++;
+                if (xpos > 3) xpos = 0;
+                break;
+            
+            case KEY_UP:
+                printf("KEY_UP\n");
+                ypos--;
+                if (xpos < 0) ypos = 0;
+                break;
+
+            case KEY_DOWN:
+                printf("KEY_DOWN\n");
+                ypos++;
+                if (ypos > 3) ypos = 0;
+                break;
+            
+            case KEY_OK:
+                printf("KEY_OK\n");
+                break;
+            }
+        }
+    }
 }
 
 void masterEffectSetting() {
@@ -3123,14 +3147,13 @@ void RotaryRefs(void *arg) {
 
 void display_lcd(void *arg) {
     xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
+    xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
+    xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     MainReDraw();
     MenuPos = 0;
     read_pattern_table(tracker_data_header);
     read_samp_info(tracker_data_header);
     part_point = 0;
-    xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
-    xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
-    vTaskDelay(32);
     for (;;) {
         if (MenuPos == 0) {
             MainReDraw();
@@ -3236,7 +3259,6 @@ void comp(void *arg) {
     int8_t rowLoopCont = 0;
     bool enbRowLoop = false;
     printf("READ!\n");
-    vTaskDelay(128);
     uint8_t chl;
     bool enbRetrigger[CHL_NUM] = {false};
     // uint8_t RetriggerPos[CHL_NUM] = {1};
@@ -3872,6 +3894,15 @@ void input(void *arg) {
                     printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
                 }
             }
+            if (received == 127) {
+                optionKeyEvent.num = 127;
+                optionKeyEvent.status = KEY_ATTACK;
+                if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                    printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+                } else {
+                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
+                }
+            }
             if (received == 99) {
                 optionKeyEvent.num = KEY_C;
                 optionKeyEvent.status = fnC ? KEY_RELEASE : KEY_ATTACK;
@@ -4088,7 +4119,6 @@ void setup()
         frame.display();
     }
     xTaskCreatePinnedToCore(&popUpTask, "Pop Up Task", 2048, NULL, 0, NULL, 0);
-    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
     static const int i2s_num = 0; // i2s port number
     i2s_config_t i2s_config = {
@@ -4116,7 +4146,7 @@ void setup()
     i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     i2s_zero_dma_buffer(I2S_NUM_0);
     new_tracker_file();
-    vTaskDelay(128);
+    xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
     printf("MAIN EXIT\n");
 }
 

@@ -464,17 +464,10 @@ public:
     }
 
     int16_t process(int16_t inputSample) {
-        // 读取延迟缓冲区中的样本
         int16_t delayedSample = buffer[bufferIndex];
-        // 计算衰减后的延迟样本
         int16_t outputSample = dryMix * inputSample + wetMix * delayedSample;
-
-        // 更新缓冲区
         buffer[bufferIndex] = inputSample + decayRate * delayedSample;
-
-        // 循环缓冲区索引
         bufferIndex = (bufferIndex + 1) % bufferLength;
-
         return outputSample;
     }
 

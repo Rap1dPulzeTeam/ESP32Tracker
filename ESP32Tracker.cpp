@@ -40,6 +40,8 @@
 #include "bfs_snake.h"
 #include "trackerIcon.h"
 
+#include "SerialTerminal.h"
+
 #define MOUNT_POINT "/sdcard"
 
 #define TFT_DC 3
@@ -247,6 +249,28 @@ bool writeConfig(const Config_t *config) {
     return true;
 }
 
+bool use_default_config() {
+    tft.printf("Using default configuration\n");
+    delay_config_t default_delay_config = {
+        .Length = 4096,
+        .decayRate = 0.3f,
+        .dryMix = 0.8f,
+        .wetMix = 0.2f
+    };
+    config = (Config_t){
+        .enbLine = true,
+        .enbCos = false,
+        .enbCubic = false,
+        .enbFltr = {false, false, false, false},
+        .enbDelay = {false, false, false, false},
+        .master_delay_config = default_delay_config,
+        .cutOffFreq = {0, 0, 0, 0},
+        .global_vol = 0.6f,
+        .stroMix = 0.4f
+    };
+    return writeConfig(&config);
+}
+
 void copyFile(const char *sourceFile, const char *destFile) {
     FILE *source, *dest;
     char buffer[1024];
@@ -413,64 +437,99 @@ uint32_t wav_ofst[34];
 
 bool mute[4] = {false, false, false, false};
 
-#define DELAY_BUFFER_SIZE 4096
+class AudioDelay {
+public:
+    AudioDelay() : buffer(NULL), bufferLength(0), bufferIndex(0) {}
 
-int16_t delayBuffer[6][4096];
-int8_t delayWriteIndex[6] = {0, 0, 0, 0, 0, 0};
-
-void initDelayBuffer() {
-    for (int i = 0; i < DELAY_BUFFER_SIZE; ++i) {
-        delayBuffer[0][i] = 0;
-        delayBuffer[1][i] = 0;
-        delayBuffer[2][i] = 0;
-        delayBuffer[3][i] = 0;
-        delayBuffer[4][i] = 0;
-        delayBuffer[5][i] = 0;
-    }
-}
-
-int16_t audioDelay(int16_t inputSample, delay_config_t delay_config, uint8_t chl) {
-    if (delay_config.Length >= DELAY_BUFFER_SIZE) {
-        delay_config.Length = DELAY_BUFFER_SIZE - 1;
+    AudioDelay(const delay_config_t& config) : buffer(NULL), bufferLength(0), bufferIndex(0) {
+        initialize(config);
     }
 
-    int readIndex = delayWriteIndex[chl] - delay_config.Length;
-    if (readIndex < 0) {
-        readIndex += DELAY_BUFFER_SIZE;
+    ~AudioDelay() {
+        if (buffer) {
+            free(buffer);
+        }
     }
 
-    int16_t outputSample = delayBuffer[chl][readIndex];
-    delayBuffer[chl][delayWriteIndex[chl]] = inputSample + delay_config.decayRate * outputSample;
-    delayWriteIndex[chl] = (delayWriteIndex[chl] + 1) & (DELAY_BUFFER_SIZE - 1);
-    return delay_config.dryMix * inputSample + delay_config.wetMix * outputSample;
-}
-
-// 适用于每次输入单个样本点的一阶低通滤波器
-int16_t lowPassFilterSingleSample(int16_t sample, int chl, uint16_t cutoffFreqIn, uint16_t sampleRate) {
-    static int16_t lastOutputs[CHL_NUM] = {0};
-    if (chl < 0 || chl >= CHL_NUM) {
-        printf("Channel index out of range.\n");
-        return sample;
+    void initialize(const delay_config_t& config) {
+        if (buffer) {
+            free(buffer);
+        }
+        bufferLength = config.Length;
+        decayRate = config.decayRate;
+        dryMix = config.dryMix;
+        wetMix = config.wetMix;
+        buffer = (int16_t*) calloc(bufferLength, sizeof(int16_t));
+        bufferIndex = 0;
     }
-    if (cutoffFreqIn == sampleRate || cutoffFreqIn <= 0) return sample;
-    float alpha = (float)cutoffFreqIn / (cutoffFreqIn + sampleRate);
-    return lastOutputs[chl] = roundf(alpha * sample + (1 - alpha) * lastOutputs[chl]);
-}
+
+    int16_t process(int16_t inputSample) {
+        // 读取延迟缓冲区中的样本
+        int16_t delayedSample = buffer[bufferIndex];
+        // 计算衰减后的延迟样本
+        int16_t outputSample = dryMix * inputSample + wetMix * delayedSample;
+
+        // 更新缓冲区
+        buffer[bufferIndex] = inputSample + decayRate * delayedSample;
+
+        // 循环缓冲区索引
+        bufferIndex = (bufferIndex + 1) % bufferLength;
+
+        return outputSample;
+    }
+
+private:
+    int16_t* buffer; // 缓冲区指针
+    uint16_t bufferLength; // 缓冲区长度
+    uint16_t bufferIndex; // 当前缓冲区索引
+    float decayRate; // 衰减率
+    float dryMix; // 原信号混合比
+    float wetMix; // 延迟信号混合比
+};
+
+class LowPassFilter {
+public:
+    LowPassFilter(uint16_t cutoffFreqIn, uint16_t sampleRate)
+        : lastOutput(0), sampleRate(sampleRate) {
+        setCutoffFrequency(cutoffFreqIn);
+    }
+
+    int16_t process(int16_t sample) {
+        lastOutput = roundf(alpha * sample + (1.0f - alpha) * lastOutput);
+        return lastOutput;
+    }
+
+    void setCutoffFrequency(uint16_t cutoffFreqIn) {
+        this->cutoffFreqIn = cutoffFreqIn;
+        if (cutoffFreqIn == sampleRate || cutoffFreqIn <= 0) {
+            alpha = 1.0f;
+        } else {
+            alpha = (float)cutoffFreqIn / (cutoffFreqIn + sampleRate);
+        }
+    }
+
+private:
+    int16_t lastOutput;
+    uint16_t cutoffFreqIn;
+    uint16_t sampleRate;
+    float alpha;
+};
 
 int8_t read_tracker_file(const char* path) {
+    tft.setCursor(0, 0);
     uint8_t *tracker_header_back = (uint8_t*)malloc(1084);
-    printf("NOW READ FILE %s\n", path);
+    tft.printf("NOW READ FILE %s\n", path);
     FILE *file = fopen(path, "rb");
 
     if (!file) {
-        printf("Failed to open file %s\n", path);
+        tft.printf("Failed to open file %s\n", path);
         return -1;
     }
     memcpy(tracker_header_back, tracker_data_header, 1084);
     size_t readRelly = fread(tracker_data_header, 1, 1084, file);
-    printf("READ HEADER FINISH\n");
+    tft.printf("READ HEADER FINISH\n");
     if (readRelly < 1084) {
-        printf("READ %s ERROR! FILE TOO SMALL! FILE SIZE IS %zu\n", path, readRelly);
+        tft.printf("READ %s ERROR! FILE TOO SMALL! FILE SIZE IS %zu\n", path, readRelly);
         fclose(file);
         memcpy(tracker_data_header, tracker_header_back, 1084);
         free(tracker_header_back);
@@ -481,7 +540,7 @@ int8_t read_tracker_file(const char* path) {
         (tracker_data_header[1081] != 0x2E) ||
         (tracker_data_header[1082] != 0x4B) ||
         (tracker_data_header[1083] != 0x2E)) {
-        printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, 
+        tft.printf("READ %s ERROR! NOT A M.K. MOD FILE! HEAD=%c%c%c%c\n", path, 
             tracker_data_header[1080], tracker_data_header[1081], 
             tracker_data_header[1082], tracker_data_header[1083]);
         fclose(file);
@@ -493,26 +552,30 @@ int8_t read_tracker_file(const char* path) {
     free(tracker_header_back);
 
     // Free previously allocated memory for patterns
+    tft.setCursor(0, 0);
+    frame.display();
     for (uint8_t i = 0; i < pat_max; i++) {
         if (tracker_data_pattern && tracker_data_pattern[i]) {
-            printf("FREE PAT #%d ADRS %p\n", i, tracker_data_pattern[i]);
             free(tracker_data_pattern[i]);
             tracker_data_pattern[i] = NULL;
+            tft.printf("FREE PAT #%d ADRS %p\n", i, tracker_data_pattern[i]);
         }
     }
 
     if (tracker_data_pattern) {
-        printf("PAT ADRS %p\n", tracker_data_pattern);
         free(tracker_data_pattern);
         tracker_data_pattern = NULL;
+        tft.printf("PAT ADRS %p\n", tracker_data_pattern);
     }
 
     // Free previously allocated memory for samples
+    tft.setCursor(0, 0);
+    frame.display();
     for (uint8_t i = 0; i < 33; i++) {
         if (tracker_data_sample[i]) {
-            printf("FREE SMP #%d ADRS %p\n", i, tracker_data_sample[i]);
             free(tracker_data_sample[i]);
             tracker_data_sample[i] = NULL;
+            tft.printf("FREE SMP #%d ADRS %p\n", i, tracker_data_sample[i]);
         }
     }
 
@@ -521,16 +584,16 @@ int8_t read_tracker_file(const char* path) {
     pat_max = find_max(NUM_PATTERNS) + 1;
     tracker_data_pattern = (uint8_t**)malloc(pat_max * sizeof(uint8_t*));
     if (!tracker_data_pattern) {
-        printf("UNKNOWN MALLOC FAIL...\n");
+        tft.printf("UNKNOWN MALLOC FAIL...\n");
         fclose(file);
         return -2;
     }
 
-    printf("HEAD NOW FILE POS %ld\n", ftell(file));
+    tft.printf("HEAD NOW FILE POS %ld\n", ftell(file));
     for (uint8_t i = 0; i < pat_max; i++) {
         tracker_data_pattern[i] = (uint8_t*)malloc(256*CHL_NUM);
         if (!tracker_data_pattern[i]) {
-            printf("READ PATTERN MALLOC FAIL! EXITING...\n");
+            tft.printf("READ PATTERN MALLOC FAIL! EXITING...\n");
             for (uint8_t j = 0; j < i; j++) {
                 free(tracker_data_pattern[j]);
             }
@@ -541,12 +604,14 @@ int8_t read_tracker_file(const char* path) {
         fread(tracker_data_pattern[i], 1, 256*CHL_NUM, file);
     }
 
-    printf("PAT NOW FILE POS %ld\n", ftell(file));
+    tft.printf("PAT NOW FILE POS %ld\n", ftell(file));
+    tft.setCursor(0, 0);
+    frame.display();
     for (uint8_t i = 1; i < 33; i++) {
         if (samp_info[i].len) {
             tracker_data_sample[i] = (int8_t*)malloc(samp_info[i].len << 1);
             if (!tracker_data_sample[i]) {
-                printf("READ SAMPLE MALLOC FAIL! EXITING...\n");
+                tft.printf("READ SAMPLE MALLOC FAIL! EXITING...\n");
                 for (uint8_t j = 0; j < pat_max; j++) {
                     free(tracker_data_pattern[j]);
                 }
@@ -558,12 +623,12 @@ int8_t read_tracker_file(const char* path) {
                 return -2;
             }
             fread(tracker_data_sample[i], 2, samp_info[i].len, file);
-            printf("READ SMP #%d SIZE: %d STATUS %p\n", i + 1, samp_info[i].len<<1, tracker_data_sample[i]);
+            tft.printf("READ SMP #%d SIZE: %d STATUS %p\n", i + 1, samp_info[i].len<<1, tracker_data_sample[i]);
         }
     }
 
-    printf("FINISH NOW FILE POS %ld\n", ftell(file));
-    printf("READ %s FINISH!\n", path);
+    tft.printf("FINISH NOW FILE POS %ld\n", ftell(file));
+    tft.printf("READ %s FINISH!\n", path);
     fclose(file);
     return 0;
 }
@@ -630,9 +695,9 @@ uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
 
 int16_t temp;
 
-bool master_delay = false;
-bool master_limit = true;
-bool master_tube = false;
+bool master_delay_enb = true;
+bool master_limit_enb = true;
+bool master_tube_enb = false;
 
 // Limit
 typedef struct {
@@ -708,11 +773,7 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
         } else {
             return -1;
         }
-        if (master_delay) {
-            buffer16BitStro[i].dataL = audioDelay(buffer16BitStro[i].dataL, config.master_delay_config, 4);
-            buffer16BitStro[i].dataR = audioDelay(buffer16BitStro[i].dataR, config.master_delay_config, 5);
-        }
-        if (master_tube) {
+        if (master_tube_enb) {
             buffer16BitStro[i].dataL = tubeSimulator(buffer16BitStro[i].dataL);
             buffer16BitStro[i].dataR = tubeSimulator(buffer16BitStro[i].dataR);
         }
@@ -754,7 +815,8 @@ void display(void *arg) {
     uint8_t showTmpEFX2_2[CHL_NUM];
     i2c_master_init(&dev, 1, 2, -1);
     ssd1306_init(&dev, 128, 64);
-    ssd1306_clear_screen(&dev, false);
+    ssd1306_clear_buffer(&dev);
+    ssd1306_show_buffer(&dev);
     ssd1306_contrast(&dev, 0xff);
     ssd1306_display_text_now(&dev, 0, "Welcome to", 11, false);
     ssd1306_display_text_now(&dev, 1, "ESP32Tracker", 13, false);
@@ -1067,13 +1129,17 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     return result;
 }
 */
-inline int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
-    if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
-        if (config.enbDelay[chl]) return audioDelay(0, channel_delay_config[chl], chl);
-        else return 0;
-    }
 
+LowPassFilter chl_filter[4] = {
+    LowPassFilter(config.cutOffFreq[0] / 2, SMP_RATE),
+    LowPassFilter(config.cutOffFreq[1] / 2, SMP_RATE),
+    LowPassFilter(config.cutOffFreq[2] / 2, SMP_RATE),
+    LowPassFilter(config.cutOffFreq[3] / 2, SMP_RATE)
+};
+
+int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
     // Update indices
+    if (mute[chl]) return 0;
     float increment = freq / SMP_RATE;
     frac_index[chl] += increment;
     if (frac_index[chl] >= 1.0) {
@@ -1125,10 +1191,10 @@ inline int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uin
 
     // Additional processing like filters or effects
     if (config.enbFltr[chl]) {
-        result = lowPassFilterSingleSample(result, chl, config.cutOffFreq[chl], SMP_RATE);
+        result = chl_filter[chl].process(result);
     }
     if (config.enbDelay[chl]) {
-        result = audioDelay(result, channel_delay_config[chl], chl);
+        result = result;//audioDelay(result, channel_delay_config[chl], chl);
     }
 
     return result;
@@ -1175,6 +1241,7 @@ bool windowsClose = true;
 int8_t MenuPos = 2;
 TaskHandle_t SOUND_ENG;
 TaskHandle_t LOAD;
+TaskHandle_t KEY_INPUT;
 bool partUP = false;
 bool partDOWN = false;
 
@@ -1606,8 +1673,9 @@ int8_t fileOpt() {
         }
         free(snap);
     }
-    vTaskResume(SOUND_ENG);
     dispReadingFile = false;
+    reset_all_index();
+    vTaskResume(SOUND_ENG);
     return 0;
 }
 
@@ -1616,7 +1684,6 @@ void loadFileInit() {
     playStat = false;
     part_point = 0;
     row_point = 0;
-    reset_all_index();
     mute[0] = mute[1] = mute[2] = mute[3] = 0;
     period[0] = period[1] = period[2] = period[3] = 0;
     frq[0] = frq[1] = frq[2] = frq[3] = 0;
@@ -2120,7 +2187,7 @@ void MainPage() {
         frame.printf("SAMP");}
 
         if (ChlMenuPos) {
-            char menuShow[13];
+            char menuShow[15];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
             windowsMenu(menuShow, ChlMenuPos, ChlMenuPos_last, 3, 90, AnimMenu, CurChange, animStep, mute[ChlPos-1] ? "unMute" : "Mute", "CHL Editor", "Close");
             animStep++;
@@ -2382,7 +2449,7 @@ void wav_player() {
             refs_p = 0;
             frame.fillRect(0, 10, 128, 20, ST7735_BLACK);
             frame.setCursor(0, 10);
-            frame.printf("POS(INT8)=%d\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
+            frame.printf("POS(INT8)=%ld\nTIME(S)=%f", ftell(wave_file), ftell(wave_file)/(float)(header.sampleRate*4));
             frame.display();
         }
         for (uint16_t s = 0; s < 2560; s++) {
@@ -2687,7 +2754,7 @@ void* importSamp(int8_t *sampData) {
                     snap[i] = tol/2;
                     frame.setCursor(2, 40);
                     frame.fillRect(0, 38, 160, 12, 0xc618);
-                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.printf("READING %ld/%d", ftell(sampFile), fileEnd);
                     frame.display();
                 }
                 free(snap2);
@@ -2710,7 +2777,7 @@ void* importSamp(int8_t *sampData) {
                     snap[i] = tol/2;
                     frame.setCursor(2, 40);
                     frame.fillRect(0, 38, 160, 12, 0xc618);
-                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.printf("READING %ld/%d", ftell(sampFile), fileEnd);
                     frame.display();
                 }
                 free(snap2);
@@ -2735,7 +2802,7 @@ void* importSamp(int8_t *sampData) {
                     snap[i] = (tol / 256) / 2;
                     frame.setCursor(2, 40);
                     frame.fillRect(0, 38, 160, 12, 0xc618);
-                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.printf("READING %ld/%d", ftell(sampFile), fileEnd);
                     // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
                     frame.display();
                 }
@@ -2759,7 +2826,7 @@ void* importSamp(int8_t *sampData) {
                     snap[i] = (tol / 256) / 2;
                     frame.setCursor(2, 40);
                     frame.fillRect(0, 38, 160, 12, 0xc618);
-                    frame.printf("READING %d/%d", ftell(sampFile), fileEnd);
+                    frame.printf("READING %ld/%d", ftell(sampFile), fileEnd);
                     // printf("header.subchunk2Size %d showCount %d snap[%d] = %d\n", header.subchunk2Size, showCount, i, snap[i]);
                     frame.display();
                 }
@@ -3034,7 +3101,7 @@ void Setting() {
     const uint8_t SETTING_NUM = 10;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Master Effect", "WAV Player", "Save Config", "uwu", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Master Effect", "WAV Player", "Save Config", "Reset Default Config", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -3109,7 +3176,7 @@ void Setting() {
                     if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);
                     else sendPopUpEvent("Save failed", 1024);
                 }
-                if (optPos == 5) sendPopUpEvent("uwu", 2048);
+                if (optPos == 5) use_default_config();
                 if (optPos == 6) snake_mod = true;
                 if (optPos == 7) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 8) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
@@ -3146,8 +3213,9 @@ void RotaryRefs(void *arg) {
 }
 
 void display_lcd(void *arg) {
-    xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
     xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
+    vTaskDelay(512);
+    xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     MainReDraw();
     MenuPos = 0;
@@ -3270,7 +3338,13 @@ void comp(void *arg) {
     int8_t skipToRow = 0;
     uint16_t buffPtr = 0;
     dispReadConfigStatus = true;
-    xTaskCreate(i2s_write_task, "I2S_WRITE", 1024, NULL, 5, &I2S_WRITE_H);
+    xTaskCreate(i2s_write_task, "I2S_WRITE", 2048, NULL, 5, &I2S_WRITE_H);
+    LowPassFilter antiAliasingL(SMP_RATE / 2, SMP_RATE);
+    LowPassFilter antiAliasingR(SMP_RATE / 2, SMP_RATE);
+    AudioDelay master_delay_L;
+    AudioDelay master_delay_R;
+    master_delay_L.initialize(config.master_delay_config);
+    master_delay_R.initialize(config.master_delay_config);
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -3290,11 +3364,18 @@ void comp(void *arg) {
                 audio_tempL = buffer_ch[chlMap[0]][buffPtr] + buffer_ch[chlMap[1]][buffPtr];
                 audio_tempR = buffer_ch[chlMap[2]][buffPtr] + buffer_ch[chlMap[3]][buffPtr];
 
-                if (master_limit) {
+                if (master_limit_enb) {
                     audio_tempL = audioLimit(&limiter, audio_tempL, &limitStats);
                     audio_tempR = audioLimit(&limiter, audio_tempR, &limitStats);
                 }
 
+                audio_tempL = antiAliasingL.process(audio_tempL);
+                audio_tempR = antiAliasingR.process(audio_tempR);
+
+                if (master_delay_enb) {
+                    audio_tempL = master_delay_L.process(audio_tempL);
+                    audio_tempR = master_delay_R.process(audio_tempR);
+                }
                 buffer16BitStro[buffPtr].dataL = audio_tempL;
                 buffer16BitStro[buffPtr].dataR = audio_tempR;
                 Mtick++;
@@ -3584,7 +3665,7 @@ void comp(void *arg) {
                                 // part_point++;
                             }
                             skipToNextPart = false;
-                            printf("NOW %d\n", part_point);
+                            // printf("NOW %d\n", part_point);
                         }
                     }
                     for (chl = 0; chl < CHL_NUM; chl++) {
@@ -3780,6 +3861,7 @@ void refesMpr121(void *arg) {
     touchPad.begin(0x5B, &Wire1);
     key_event_t touchPadEvent;
     printf("MPR121 READY!\n");
+    tft.printf("TOUCHPAD Ready.\n");
     for (;;) {
         currtouched = touchPad.touched();
         for (uint8_t i=0; i<12; i++) {
@@ -3826,6 +3908,7 @@ void input(void *arg) {
     };
     temp_sensor_set_config(temp_sensor);
     temp_sensor_start();
+    tft.printf("INPUT Ready.\n");
     for (;;) {
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
@@ -3937,7 +4020,7 @@ void input(void *arg) {
             if (received == 111) {
                 snapShot = true;
             }
-            if (received == 98) master_tube = !master_tube;
+            if (received == 98) master_tube_enb = !master_tube_enb;
             if (received == 107) {
                 vTaskPrioritySet(NULL, 5);
                 FileInfo* files = NULL;
@@ -4023,6 +4106,174 @@ void Bootanimation() {
     frame.setFont(NULL);
 }
 
+void testCmd(int argc, const char* argv[]) {
+    Serial.print("Test command executed with args: ");
+    for (int i = 1; i < argc; i++) {
+        Serial.print(argv[i]);
+        Serial.print(" ");
+    }
+    Serial.println();
+}
+
+void restartCmd(int argc, const char* argv[]) {
+    printf("Rebooting...\n");
+    ESP.restart();
+}
+
+void editConfigCmd(int argc, const char* argv[]) {
+    if (argc == 1) {
+        printf("config: config <item> [val]\n");
+    } else if (argc == 2 || argc == 3) {
+        int writeMode = (argc == 3);
+        if (strcmp(argv[1], "all") == 0) {
+            if (writeMode) {
+                printf("Cannot set value for 'all'\n");
+                return;
+            }
+            printf("ALL CONFIG INFO:\n");
+            printf("cutOffFreq: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.cutOffFreq[0], config.cutOffFreq[1], config.cutOffFreq[2], config.cutOffFreq[3]);
+            printf("enbLine: %d\n", config.enbLine);
+            printf("enbCos: %d\n", config.enbCos);
+            printf("enbCubic: %d\n", config.enbCubic);
+            printf("enbDelay: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbDelay[0], config.enbDelay[1], config.enbDelay[2], config.enbDelay[3]);
+            printf("enbFltr: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbFltr[0], config.enbFltr[1], config.enbFltr[2], config.enbFltr[3]);
+            printf("global_vol: %f\n", config.global_vol);
+            printf("stroMix: %f\n", config.stroMix);
+            printf("\nMASTER_DELAY_CONFIG:\n");
+            printf("decayRate: %f\n", config.master_delay_config.decayRate);
+            printf("dryMix: %f\n", config.master_delay_config.dryMix);
+            printf("wetMix: %f\n", config.master_delay_config.wetMix);
+            printf("Length: %d\n", config.master_delay_config.Length);
+        } else if (strcmp(argv[1], "save") == 0) {
+            if (writeMode) {
+                printf("Cannot set value for 'save'\n");
+                return;
+            }
+            writeConfig(&config);
+            printf("Save config success!\n");
+        } else if (strcmp(argv[1], "reset") == 0) {
+            if (writeMode) {
+                printf("Cannot set value for 'reset'\n");
+                return;
+            }
+            use_default_config();
+            printf("Reset config success!\n");
+        } else if (strcmp(argv[1], "cutOffFreq") == 0) {
+            if (writeMode) {
+                int val = atoi(argv[2]);
+                for (int i = 0; i < 4; i++) {
+                    config.cutOffFreq[i] = val;
+                }
+            } else {
+                printf("cutOffFreq: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.cutOffFreq[0], config.cutOffFreq[1], config.cutOffFreq[2], config.cutOffFreq[3]);
+            }
+        } else if (strcmp(argv[1], "enbLine") == 0) {
+            if (writeMode) {
+                config.enbLine = atoi(argv[2]);
+            } else {
+                printf("enbLine: %d\n", config.enbLine);
+            }
+        } else if (strcmp(argv[1], "enbCos") == 0) {
+            if (writeMode) {
+                config.enbCos = atoi(argv[2]);
+            } else {
+                printf("enbCos: %d\n", config.enbCos);
+            }
+        } else if (strcmp(argv[1], "enbCubic") == 0) {
+            if (writeMode) {
+                config.enbCubic = atoi(argv[2]);
+            } else {
+                printf("enbCubic: %d\n", config.enbCubic);
+            }
+        } else if (strcmp(argv[1], "enbDelay") == 0) {
+            if (writeMode) {
+                int val = atoi(argv[2]);
+                for (int i = 0; i < 4; i++) {
+                    config.enbDelay[i] = val;
+                }
+            } else {
+                printf("enbDelay: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbDelay[0], config.enbDelay[1], config.enbDelay[2], config.enbDelay[3]);
+            }
+        } else if (strcmp(argv[1], "enbFltr") == 0) {
+            if (writeMode) {
+                int val = atoi(argv[2]);
+                for (int i = 0; i < 4; i++) {
+                    config.enbFltr[i] = val;
+                }
+            } else {
+                printf("enbFltr: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbFltr[0], config.enbFltr[1], config.enbFltr[2], config.enbFltr[3]);
+            }
+        } else if (strcmp(argv[1], "global_vol") == 0) {
+            if (writeMode) {
+                config.global_vol = atof(argv[2]);
+            } else {
+                printf("global_vol: %f\n", config.global_vol);
+            }
+        } else if (strcmp(argv[1], "stroMix") == 0) {
+            if (writeMode) {
+                config.stroMix = atof(argv[2]);
+            } else {
+                printf("stroMix: %f\n", config.stroMix);
+            }
+        } else if (strncmp(argv[1], "master_delay_config.", 20) == 0) {
+            const char *field = argv[1] + 20; // 跳过 "master_delay_config."
+            if (strcmp(field, "decayRate") == 0) {
+                if (writeMode) {
+                    config.master_delay_config.decayRate = atof(argv[2]);
+                } else {
+                    printf("master_delay_config.decayRate: %f\n", config.master_delay_config.decayRate);
+                }
+            } else if (strcmp(field, "dryMix") == 0) {
+                if (writeMode) {
+                    config.master_delay_config.dryMix = atof(argv[2]);
+                } else {
+                    printf("master_delay_config.dryMix: %f\n", config.master_delay_config.dryMix);
+                }
+            } else if (strcmp(field, "wetMix") == 0) {
+                if (writeMode) {
+                    config.master_delay_config.wetMix = atof(argv[2]);
+                } else {
+                    printf("master_delay_config.wetMix: %f\n", config.master_delay_config.wetMix);
+                }
+            } else if (strcmp(field, "Length") == 0) {
+                if (writeMode) {
+                    config.master_delay_config.Length = atoi(argv[2]);
+                } else {
+                    printf("master_delay_config.Length: %d\n", config.master_delay_config.Length);
+                }
+            } else {
+                printf("Unknown master_delay_config field: %s\n", field);
+            }
+        } else {
+            printf("Unknown config item: %s\n", argv[1]);
+        }
+    }
+}
+
+
+void recovery_mode() {
+    tft.fillScreen(0x0000);
+    vTaskDelete(KEY_INPUT);
+    memset(frame.lcd_buffer, 0, 40960*sizeof(uint16_t));
+    tft.setFont(NULL);
+    tft.setCursor(0, 0);
+    tft.printf("ESP32Tracker Recovery Mode\n");
+    tft.printf("BUILD DATA:\n%s %s\n", __DATE__, __TIME__);
+    SerialTerminal terminal;
+    SerialTerminal::instance = &terminal;
+    terminal.begin(115200);
+    terminal.addCommand("test", testCmd);
+    terminal.addCommand("reboot", restartCmd);
+    terminal.addCommand("config", editConfigCmd);
+    tft.setTextWrap(true);
+    tft.printf("Serial BaudRate=115200\n");
+    tft.printf("Awaiting command...\n");
+    for (;;) {
+        terminal.update();
+        vTaskDelay(32);
+    }
+}
+
 void setup()
 {
     pinMode(LCD_BK, OUTPUT);
@@ -4034,6 +4285,9 @@ void setup()
     tft.setRotation(3);
     tft.fillScreen(ST7735_BLACK);
     Bootanimation();
+    tft.setFont(&font3x5);
+    tft.setTextWrap(false);
+    tft.setCursor(0, 0);
     frame.setFont(&abcd);
     initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
@@ -4050,32 +4304,23 @@ void setup()
     };
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 2,
+        .max_files = 3,
         .allocation_unit_size = 8 * 1024
     };
 
     ret = esp_vfs_spiffs_register(&spiffs_conf);
     if (ret == ESP_OK) {
-        printf("SPIFFS mounted!\n");
+        tft.printf("SPIFFS mounted!\n");
     } else {
-        printf("SPIFFS ERROR! NOW FORMAT! PLEASE WAIT...\n");
+        tft.printf("SPIFFS ERROR! NOW FORMAT! PLEASE WAIT...\n");
     }
-
+    tft.printf("Reading configuration...\n");
     if (!readConfig(&config)) {
-        printf("Using default configuration\n");
-        config = (Config_t){
-            .enbLine = true,
-            .enbCos = false,
-            .enbCubic = false,
-            .enbFltr = {false, false, false, false},
-            .enbDelay = {false, false, false, false},
-            .cutOffFreq = {0, 0, 0, 0},
-            .global_vol = 0.6f,
-            .stroMix = 0.4f
-        };
-        writeConfig(&config);
+        use_default_config();
+    } else {
+        tft.printf("Read configuration finish\n");
     }
-
+    tft.printf("Init sdcard...\n");
     sdmmc_card_t *card;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -4085,8 +4330,10 @@ void setup()
     slot_config.cmd = GPIO_NUM_47;
     slot_config.d0 = GPIO_NUM_45;
     key_event_t optionKeyEvent;
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, NULL, 0);
     ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    tft.printf("Init sdcard finish!\n");
+    tft.printf("Init INPUT Services...\n");
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, &KEY_INPUT, 0);
     while (ret != ESP_OK) {
         dispSdcardError = true;
         analogWrite(LCD_BK, 255);
@@ -4118,8 +4365,12 @@ void setup()
         vTaskDelay(16);
         frame.display();
     }
+    tft.printf("Init GUI Services...\n");
     xTaskCreatePinnedToCore(&popUpTask, "Pop Up Task", 2048, NULL, 0, NULL, 0);
-    xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
+    tft.printf("GUI Ready.\n");
+    //tft.printf("Init TOUCHPAD Services...\n");
+    //xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
+    tft.printf("Init Sound Driver...\n");
     static const int i2s_num = 0; // i2s port number
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
@@ -4141,13 +4392,22 @@ void setup()
         .data_out_num = 41,
         .data_in_num = I2S_PIN_NO_CHANGE
     };
-    printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
-    printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
+    tft.printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
+    tft.printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
     i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     i2s_zero_dma_buffer(I2S_NUM_0);
+    tft.printf("Sound Driver Ready.\n");
     new_tracker_file();
+    tft.printf("MAIN INIT FINISH!\nPress OK to continue boot...\nPress BACK to enter recovery mode...");
+    for (;;) {
+        if (readOptionKeyEvent == pdTRUE) {
+            if (optionKeyEvent.num == KEY_OK) break;
+            if (optionKeyEvent.num == 127) recovery_mode();
+        }
+        vTaskDelay(128);
+    }
+    tft.printf("BOOTING...\n");
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
-    printf("MAIN EXIT\n");
 }
 
 void loop() {

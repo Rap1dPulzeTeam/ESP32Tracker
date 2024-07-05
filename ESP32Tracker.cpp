@@ -57,6 +57,7 @@ void read_pattern_table(uint8_t head_data[1084]);
 void read_samp_info(uint8_t head_data[1084]);
 inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]);
 inline void refsPopUp();
+void recovery_mode();
 
 bool PopUpExist = false;
 // void comp_wave_ofst();
@@ -199,6 +200,7 @@ typedef struct {
     bool enbLine;
     bool enbCos;
     bool enbCubic;
+    bool enbMasterDelay;
     bool enbFltr[4];
     bool enbDelay[4];
     delay_config_t master_delay_config;
@@ -261,6 +263,7 @@ bool use_default_config() {
         .enbLine = true,
         .enbCos = false,
         .enbCubic = false,
+        .enbMasterDelay = false,
         .enbFltr = {false, false, false, false},
         .enbDelay = {false, false, false, false},
         .master_delay_config = default_delay_config,
@@ -439,45 +442,45 @@ bool mute[4] = {false, false, false, false};
 
 class AudioDelay {
 public:
-    AudioDelay() : buffer(NULL), bufferLength(0), bufferIndex(0) {}
+    AudioDelay() : delayBuffer(NULL), bufferLength(0), bufferIndex(0) {}
 
-    AudioDelay(const delay_config_t& config) : buffer(NULL), bufferLength(0), bufferIndex(0) {
+    AudioDelay(const delay_config_t& config) : delayBuffer(NULL), bufferLength(0), bufferIndex(0) {
         initialize(config);
     }
 
     ~AudioDelay() {
-        if (buffer) {
-            free(buffer);
+        if (delayBuffer) {
+            free(delayBuffer);
         }
     }
 
     void initialize(const delay_config_t& config) {
-        if (buffer) {
-            free(buffer);
+        if (delayBuffer) {
+            free(delayBuffer);
         }
         bufferLength = config.Length;
         decayRate = config.decayRate;
         dryMix = config.dryMix;
         wetMix = config.wetMix;
-        buffer = (int16_t*) calloc(bufferLength, sizeof(int16_t));
+        delayBuffer = (int16_t*) calloc(bufferLength, sizeof(int16_t));
         bufferIndex = 0;
     }
 
     int16_t process(int16_t inputSample) {
-        int16_t delayedSample = buffer[bufferIndex];
+        int16_t delayedSample = delayBuffer[bufferIndex];
         int16_t outputSample = dryMix * inputSample + wetMix * delayedSample;
-        buffer[bufferIndex] = inputSample + decayRate * delayedSample;
+        delayBuffer[bufferIndex] = inputSample + decayRate * delayedSample;
         bufferIndex = (bufferIndex + 1) % bufferLength;
         return outputSample;
     }
 
 private:
-    int16_t* buffer; // 缓冲区指针
-    uint16_t bufferLength; // 缓冲区长度
-    uint16_t bufferIndex; // 当前缓冲区索引
-    float decayRate; // 衰减率
-    float dryMix; // 原信号混合比
-    float wetMix; // 延迟信号混合比
+    int16_t* delayBuffer;
+    uint16_t bufferLength;
+    uint16_t bufferIndex;
+    float decayRate;
+    float dryMix;
+    float wetMix;
 };
 
 class LowPassFilter {
@@ -688,7 +691,6 @@ uint8_t smp_num[CHL_NUM] = {0, 0, 0, 0};
 
 int16_t temp;
 
-bool master_delay_enb = true;
 bool master_limit_enb = true;
 bool master_tube_enb = false;
 
@@ -756,6 +758,8 @@ void i2s_write_task(void *arg) {
 }
 
 Limiter limiter;
+AudioDelay master_delay_L;
+AudioDelay master_delay_R;
 
 int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
     audio16BitStro *buffer16BitStro = (audio16BitStro*)src;
@@ -769,6 +773,10 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
         if (master_tube_enb) {
             buffer16BitStro[i].dataL = tubeSimulator(buffer16BitStro[i].dataL);
             buffer16BitStro[i].dataR = tubeSimulator(buffer16BitStro[i].dataR);
+        }
+        if (config.enbMasterDelay) {
+            buffer16BitStro[i].dataL = master_delay_L.process(buffer16BitStro[i].dataL);
+            buffer16BitStro[i].dataR = master_delay_R.process(buffer16BitStro[i].dataR);
         }
         int16_t inputL = buffer16BitStro[i].dataL;
         int16_t inputR = buffer16BitStro[i].dataR;
@@ -1045,10 +1053,9 @@ float arpFreq[3][CHL_NUM];
 int8_t lastVol[CHL_NUM];
 float sin_index;
 /*
-inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
+inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
     if (vole == 0 || freq <= 0 || mute[chl] || tracker_data_sample[smp_num] == NULL) {
-        if (config.enbDelay[chl]) return audioDelay(0, 2048, 0.23f, 0.8f, 0.2f, chl);
-        else return 0;
+        return 0;
     }
 
     int_index[chl] += freq / SMP_RATE;
@@ -1066,13 +1073,13 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     int16_t sample1 = (tracker_data_sample[smp_num][idx] * (vole << 1));
     float result;
 
-    if ((isline && isCos) || (isline && isCubic) || (isCos && isCubic)) {
-        isCubic = false;
-        isline = false;
-        isCos = false;
+    if ((config.enbLine && config.enbCos) || (config.enbLine && config.enbCubic) || (config.enbCos && config.enbCubic)) {
+        config.enbCubic = false;
+        config.enbLine = false;
+        config.enbCos = false;
     }
 
-    if (isline) {
+    if (config.enbLine) {
         int nextIdx = idx + 1;
         if (nextIdx >= smp_size) {
             nextIdx = isLoop ? loopStart : 0;
@@ -1080,7 +1087,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
         int16_t sample2 = (tracker_data_sample[smp_num][nextIdx] * (vole << 1));
         float frac = int_index[chl] - idx;
         result = (1.0f - frac) * sample1 + frac * sample2;
-    } else if (isCos) {
+    } else if (config.enbCos) {
         int nextIdx = idx + 1;
         if (nextIdx >= smp_size) {
             nextIdx = isLoop ? loopStart : 0;
@@ -1089,7 +1096,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
         float frac = int_index[chl] - idx;
         float f_t = (1 - cosf(M_PI_F * frac)) / 2;
         result = (1.0f - f_t) * sample1 + f_t * sample2;
-    } else if (isCubic) {
+    } else if (config.enbCubic) {
         int prevIdx = idx - 1;
         int nextIdx1 = idx + 1;
         int nextIdx2 = idx + 2;
@@ -1113,10 +1120,7 @@ inline float make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint1
     }
 
     if (config.enbFltr[chl]) {
-        result = lowPassFilterSingleSample(result, chl, config.cutOffFreq[chl], SMP_RATE);
-    }
-    if (config.enbDelay[chl]) {
-        result = audioDelay(result, 2048, 0.23f, 0.8f, 0.2f, chl);
+        //result = lowPassFilterSingleSample(result, chl, config.cutOffFreq[chl], SMP_RATE);
     }
 
     return result;
@@ -1130,7 +1134,7 @@ LowPassFilter chl_filter[4] = {
     LowPassFilter(config.cutOffFreq[3] / 2, SMP_RATE)
 };
 
-int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size, bool isline, bool isCos, bool isCubic) {
+int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
     // Update indices
     if (mute[chl]) return 0;
     float increment = freq / SMP_RATE;
@@ -1153,20 +1157,24 @@ int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t l
     int idx = int_index[chl];
     float frac = frac_index[chl];
     int16_t result = 0;
+
+    if (tracker_data_sample[smp_num] == NULL) {
+        return 0;
+    }
     
     // Perform interpolation
-    if (isline) {
+    if (config.enbLine) {
         int nextIdx = (idx + 1) % smp_size;
         int16_t sample1 = tracker_data_sample[smp_num][idx];
         int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
         result = roundf((1.0f - frac) * sample1 + frac * sample2);
-    } else if (isCos) {
+    } else if (config.enbCos) {
         int nextIdx = (idx + 1) % smp_size;
         int16_t sample1 = tracker_data_sample[smp_num][idx];
         int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
         float f_t = (1 - cosf(M_PI_F * frac)) / 2;
         result = roundf((1.0f - f_t) * sample1 + f_t * sample2);
-    } else if (isCubic) {
+    } else if (config.enbCubic) {
         int prevIdx = (idx > 0 ? idx - 1 : smp_size - 1);
         int nextIdx1 = (idx + 1) % smp_size;
         int nextIdx2 = (idx + 2) % smp_size;
@@ -3334,10 +3342,6 @@ void comp(void *arg) {
     xTaskCreate(i2s_write_task, "I2S_WRITE", 2048, NULL, 5, &I2S_WRITE_H);
     LowPassFilter antiAliasingL(SMP_RATE / 2, SMP_RATE);
     LowPassFilter antiAliasingR(SMP_RATE / 2, SMP_RATE);
-    AudioDelay master_delay_L;
-    AudioDelay master_delay_R;
-    master_delay_L.initialize(config.master_delay_config);
-    master_delay_R.initialize(config.master_delay_config);
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -3349,9 +3353,9 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < CHL_NUM; chl++) {
                     if (samp_info[smp_num[chl]].loopLen > 1) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1, config.enbLine, config.enbCos, config.enbCubic);
+                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1);
                     }
                 }
                 audio_tempL = buffer_ch[chlMap[0]][buffPtr] + buffer_ch[chlMap[1]][buffPtr];
@@ -3365,10 +3369,6 @@ void comp(void *arg) {
                 audio_tempL = antiAliasingL.process(audio_tempL);
                 audio_tempR = antiAliasingR.process(audio_tempR);
 
-                if (master_delay_enb) {
-                    audio_tempL = master_delay_L.process(audio_tempL);
-                    audio_tempR = master_delay_R.process(audio_tempR);
-                }
                 buffer16BitStro[buffPtr].dataL = audio_tempL;
                 buffer16BitStro[buffPtr].dataR = audio_tempR;
                 Mtick++;
@@ -3709,9 +3709,9 @@ void comp(void *arg) {
         } else {
             for (uint16_t i = 0; i < BUFF_SIZE; i++) {
                 if (samp_info[smp_num[0]].loopLen > 1) {
-                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
                 } else {
-                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1, false, false, false);
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
                 }
                 buffer16BitStro[i].dataL = (int16_t)
                         (buffer_ch[chlMap[0]][i]
@@ -3762,7 +3762,7 @@ void comp(void *arg) {
                 }
             }
             // pwm_audio_write((uint8_t*)&buffer, BUFF_SIZE, &wrin, 64);
-            frq[0] = patch_table[samp_info[smp_num[0]].finetune] / period[0];
+            if (period[0]) frq[0] = patch_table[samp_info[smp_num[0]].finetune] / period[0];
             // i2s_write(I2S_NUM_0, buffer, BUFF_SIZE*sizeof(audio16BitStro), &wrin, portMAX_DELAY);
             if (audio_master_write(buffer, 2, sizeof(audio16BitStro), BUFF_SIZE) != 0) exit(-1);
             vTaskDelay(4);
@@ -3911,8 +3911,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 119) {
@@ -3920,8 +3918,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 115) {
@@ -3929,8 +3925,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 97) {
@@ -3938,8 +3932,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 100) {
@@ -3947,8 +3939,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 108) {
@@ -3956,8 +3946,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 122) {
@@ -3966,8 +3954,6 @@ void input(void *arg) {
                 fnA = !fnA;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
                 }
             }
             if (received == 127) {
@@ -3975,8 +3961,6 @@ void input(void *arg) {
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=ATTACK\n", optionKeyEvent.num);
                 }
             }
             if (received == 99) {
@@ -3985,8 +3969,6 @@ void input(void *arg) {
                 fnC = !fnC;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
-                } else {
-                    printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
                 }
             }
             if (received == 49) {
@@ -4098,7 +4080,7 @@ void Bootanimation() {
     }
     frame.setFont(NULL);
 }
-
+//----------------RECOVERY MODE--------------------------
 void testCmd(int argc, const char* argv[]) {
     Serial.print("Test command executed with args: ");
     for (int i = 1; i < argc; i++) {
@@ -4128,6 +4110,7 @@ void editConfigCmd(int argc, const char* argv[]) {
             printf("enbLine: %d\n", config.enbLine);
             printf("enbCos: %d\n", config.enbCos);
             printf("enbCubic: %d\n", config.enbCubic);
+            printf("enbMasterDelay: %d\n", config.enbMasterDelay);
             printf("enbDelay: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbDelay[0], config.enbDelay[1], config.enbDelay[2], config.enbDelay[3]);
             printf("enbFltr: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbFltr[0], config.enbFltr[1], config.enbFltr[2], config.enbFltr[3]);
             printf("global_vol: %f\n", config.global_vol);
@@ -4177,6 +4160,12 @@ void editConfigCmd(int argc, const char* argv[]) {
                 config.enbCubic = atoi(argv[2]);
             } else {
                 printf("enbCubic: %d\n", config.enbCubic);
+            }
+        } else if (strcmp(argv[1], "enbMasterDelay") == 0) {
+            if (writeMode) {
+                config.enbMasterDelay = atoi(argv[2]);
+            } else {
+                printf("enbMasterDelay: %d\n", config.enbMasterDelay);
             }
         } else if (strcmp(argv[1], "enbDelay") == 0) {
             if (writeMode) {
@@ -4243,6 +4232,19 @@ void editConfigCmd(int argc, const char* argv[]) {
     }
 }
 
+void getVersion(int argc, const char* argv[]) {
+    printf("ESP32Tracker V0.1\nlibchara-dev\nBuilding with ArduinoESP32 (IDF4.4.6)\nBuild data: %s %s\nEnable -Ofast\n", __DATE__, __TIME__);
+}
+
+void lcd_printCmd(int argc, const char* argv[]) {
+    if (argc > 1) tft.println(argv[1]);
+}
+
+void printCmd(int argc, const char* argv[]) {
+    if (argc > 1) printf("%s\n", argv[1]);
+}
+
+// void getHardwareStatus(int argc, const char* argv[]);
 
 void recovery_mode() {
     tft.fillScreen(0x0000);
@@ -4258,14 +4260,18 @@ void recovery_mode() {
     terminal.addCommand("test", testCmd);
     terminal.addCommand("reboot", restartCmd);
     terminal.addCommand("config", editConfigCmd);
+    terminal.addCommand("version", getVersion);
+    terminal.addCommand("lcd_print", lcd_printCmd);
+    terminal.addCommand("print", printCmd);
     tft.setTextWrap(true);
     tft.printf("Serial BaudRate=115200\n");
-    tft.printf("Awaiting command...\n");
+    tft.printf("Serial Terminal Started\n");
     for (;;) {
         terminal.update();
         vTaskDelay(32);
     }
 }
+//----------------RECOVERY MODE--------------------------
 
 void setup()
 {
@@ -4398,6 +4404,10 @@ void setup()
             if (optionKeyEvent.num == 127) recovery_mode();
         }
         vTaskDelay(128);
+    }
+    if (config.enbMasterDelay) {
+        master_delay_L.initialize(config.master_delay_config);
+        master_delay_R.initialize(config.master_delay_config);
     }
     tft.printf("BOOTING...\n");
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);

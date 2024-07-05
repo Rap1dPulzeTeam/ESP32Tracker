@@ -23,23 +23,34 @@ int list_directory(const char* path, FileInfo** files) {
         }
 
         // 构建完整的文件路径
-        char* full_path = (char*)malloc(strlen(entry->d_name) + 2); // 加上斜杠和空字符
+        size_t full_path_len = strlen(entry->d_name) + 2; // 加上斜杠和空字符
+        char* full_path = (char*)malloc(full_path_len);
         if (!full_path) {
             perror("malloc");
+            closedir(dir);
             return -1;
         }
-        sprintf(full_path, "%s", entry->d_name);
+        snprintf(full_path, full_path_len, "%s", entry->d_name);
 
         // 判断文件类型
         bool is_directory = entry->d_type == DT_DIR;
 
         // 将文件/目录信息存储到数组中
-        *files = (FileInfo*)realloc(*files, (count + 1) * sizeof(FileInfo));
-        if (!*files) {
+        FileInfo* new_files = (FileInfo*)realloc(*files, (count + 1) * sizeof(FileInfo));
+        if (!new_files) {
             perror("realloc");
+            free(full_path);
+            closedir(dir);
             return -1;
         }
+        *files = new_files;
         (*files)[count].name = strdup(full_path);
+        if (!(*files)[count].name) {
+            perror("strdup");
+            free(full_path);
+            closedir(dir);
+            return -1;
+        }
         (*files)[count].is_directory = is_directory;
         count++;
 

@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 
+typedef void (*displayBack_t)(const char*, bool);
+
 class SerialTerminal {
 public:
     static const int CMD_BUF_SIZE = 64;
@@ -16,11 +18,13 @@ public:
     SerialTerminal() 
         : cmdBufferIndex(0), cmdListSize(0) {}
 
-    void begin(long baudRate) {
+    void begin(long baudRate, displayBack_t dispback_in) {
         Serial.begin(baudRate);
+        dispback_in("Serial Terminal Started", true);
         Serial.println("Serial Terminal Started");
+        dispback_in(">>> ", false);
         printPrompt();
-
+        displayBack = dispback_in;
         // 添加内置的帮助命令
         addCommand("help", helpCmd);
     }
@@ -44,6 +48,7 @@ public:
                 } else {
                     Serial.println(); // 直接回车时换行
                 }
+                displayBack(">>> ", false);
                 printPrompt(); // 打印提示行
             } else if (cmdBufferIndex < CMD_BUF_SIZE - 1) {
                 // 记录命令字符并回显
@@ -69,6 +74,7 @@ public:
     }
 
     void executeCommand(const char* cmd) {
+        displayBack(cmd, true);
         // 分割命令和参数
         const char* argv[CMD_BUF_SIZE / 2];
         int argc = 0;
@@ -84,10 +90,13 @@ public:
             for (int i = 0; i < cmdListSize; i++) {
                 if (strcmp(argv[0], cmdList[i].name) == 0) {
                     cmdList[i].func(argc, argv);
+                    displayBack("[OKAY] ", false);
+                    displayBack(argv[0], true);
                     return;
                 }
             }
             Serial.println("Unknown command");
+            displayBack("[FAIL] Unknown command", true);
         }
     }
 
@@ -95,9 +104,10 @@ public:
 
 private:
     void printPrompt() {
-        Serial.print("ESP32Terminal>>> ");
+        Serial.print("ESP32Tracker>>> ");
     }
 
+    displayBack_t displayBack;
     char cmdBuffer[CMD_BUF_SIZE];
     int cmdBufferIndex;
     Command cmdList[CMD_LIST_SIZE];

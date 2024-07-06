@@ -37,7 +37,6 @@
 #include "3x5font.h"
 #include "JetBrainsMonoNL_MediumItalic8pt7b.h"
 #include "esp32/clk.h"
-#include "bfs_snake.h"
 #include "trackerIcon.h"
 
 #include "SerialTerminal.h"
@@ -58,6 +57,9 @@ void read_samp_info(uint8_t head_data[1084]);
 inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]);
 inline void refsPopUp();
 void recovery_mode();
+void update_patch_table(uint32_t base_freq);
+
+bool in_recovery_mode = false;
 
 bool PopUpExist = false;
 // void comp_wave_ofst();
@@ -207,6 +209,7 @@ typedef struct {
     uint16_t cutOffFreq[4];
     float global_vol;
     float stroMix;
+    uint32_t engine_clock_speed;
 } Config_t;
 
 delay_config_t channel_delay_config[4];
@@ -269,7 +272,8 @@ bool use_default_config() {
         .master_delay_config = default_delay_config,
         .cutOffFreq = {0, 0, 0, 0},
         .global_vol = 0.6f,
-        .stroMix = 0.4f
+        .stroMix = 0.4f,
+        .engine_clock_speed = 3546895
     };
     return writeConfig(&config);
 }
@@ -302,8 +306,10 @@ void copyFile(const char *sourceFile, const char *destFile) {
     printf("File copied successfully from %s to %s\n", sourceFile, destFile);
 }
 
-const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.9175884672f, 3624501.595143772f, 3650766.227807657f, 3677221.184826728f, 3703867.8453697185f, 3730707.5985993897f,
-                         3347767.391694687f, 3372026.6942439806f, 3396461.7896998064f, 3421073.9519300302f, 3445864.464033491f, 3470834.61840689f, 3495985.7168121682f, 3521319.0704443706f};
+// const float patch_table[16] = {3546836.0f, 3572537.835745873f, 3598425.9175884672f, 3624501.595143772f, 3650766.227807657f, 3677221.184826728f, 3703867.8453697185f, 3730707.5985993897f,
+//                                3347767.391694687f, 3372026.6942439806f, 3396461.7896998064f, 3421073.9519300302f, 3445864.464033491f, 3470834.61840689f, 3495985.7168121682f, 3521319.0704443706f};
+
+float patch_table[16];
 
 #define hexToDecimalTens(num) (((num) >> 4) & 0x0F)
 #define hexToDecimalOnes(num) ((num) & 0x0F)
@@ -700,8 +706,6 @@ typedef struct {
     int16_t soft_knee;
 } Limiter;
 
-bool snake_mod = false;
-
 void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
     limiter->threshold = threshold;
     limiter->soft_knee = soft_knee;
@@ -804,8 +808,6 @@ int8_t audio_master_write(void *src, uint8_t numChl, size_t size, size_t len) {
 
 // OSC START -----------------------------------------------------
 void display(void *arg) {
-    Snake snake;
-    Point food, direction = {1, 0};
     char ten[24];
     char one[24];
     uint16_t viewTmp[CHL_NUM];
@@ -832,6 +834,12 @@ void display(void *arg) {
         vTaskDelay(32);
         if (dispSdcardError) ssd1306_display_text_now(&dev, 4, "SDCARD ERROR!!!", 16, false);
         if (dispReadConfigStatus) break;
+        if (in_recovery_mode) {
+            ssd1306_clear_buffer(&dev);
+            ssd1306_show_buffer(&dev);
+            ssd1306_display_text_now(&dev, 3, " RECOVERY MODE", 15, false);
+            vTaskDelete(NULL);
+        }
     }
     vTaskDelay(32);
     for (;;) {
@@ -863,141 +871,115 @@ void display(void *arg) {
             ssd1306_display_text_now(&dev, 7, dispReadingFileError ? "READ FILE ERROR" : "READING FILE...", 16, false);
             vTaskDelay(128);
         } else {
-            if (snake_mod) {
-                srand(234*buffer16BitStro[1].dataL+buffer16BitStro[2].dataR*buffer16BitStro[3].dataL+buffer16BitStro[6].dataR+buffer16BitStro[2].dataL+buffer16BitStro[9].dataR*1234);
-                init_snake(&snake);
-                init_food(&food, &snake);
-                for (;;) {
-                    if (!astar(&snake, food, &direction)) {
-                        Point next_position = {snake.body[0].x + direction.x, snake.body[0].y + direction.y};
-                        if (!is_valid(next_position, &snake)) {
-                            game_over(&dev);
-                            snake_mod = false;
-                            break;
-                        }
-                    }
-                    move_snake(&snake, direction);
+            for (uint8_t contr = 0; contr < 4; contr++) {
+                ssd1306_clear_buffer(&dev);
 
-                    if (snake.body[0].x == food.x && snake.body[0].y == food.y) {
-                        grow_snake(&snake);
-                        init_food(&food, &snake);
-                    }
+                switch (RTY_MOD)
+                {
+                case RTY_VOL:
+                    sprintf(ten, " VOL: %d    ", (int8_t)(config.global_vol*100));
+                    break;
+                
+                case RTY_MIX:
+                    sprintf(ten, " MIX: %d    ", (int8_t)(config.stroMix*100));
+                    break;
 
-                    draw_game(&snake, food, &dev);
-                    vTaskDelay(1);
+                case RTY_CPU:
+                    sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(config.stroMix*100));
+                    break;
                 }
-                free(snake.body);
-            } else {
-                for (uint8_t contr = 0; contr < 4; contr++) {
-                    ssd1306_clear_buffer(&dev);
 
-                    switch (RTY_MOD)
-                    {
-                    case RTY_VOL:
-                        sprintf(ten, " VOL: %d    ", (int8_t)(config.global_vol*100));
-                        break;
-                    
-                    case RTY_MIX:
-                        sprintf(ten, " MIX: %d    ", (int8_t)(config.stroMix*100));
-                        break;
-
-                    case RTY_CPU:
-                        sprintf(ten, " %2d %2d>%2d %d  ", row_point, part_point, part_table[part_point], limitStats ? limitStats : (uint8_t)(config.stroMix*100));
-                        break;
+                addr[0] = (uint8_t)(int_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
+                addr[1] = (uint8_t)(int_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
+                addr[2] = (uint8_t)(int_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
+                addr[3] = (uint8_t)(int_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
+                // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
+                ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
+                if (dispShowEfct) {
+                    if (tracker_data_pattern != NULL && tracker_data_pattern[part_table[part_point]] != NULL) {
+                        for (uint8_t i = 0; i < CHL_NUM; i++) {
+                            read_part_data(tracker_data_pattern, part_table[part_point], row_point, i, viewTmp);
+                            showTmpEFX1[i] = viewTmp[2];
+                            showTmpEFX2_1[i] = hexToDecimalTens(viewTmp[3]);
+                            showTmpEFX2_2[i] = hexToDecimalOnes(viewTmp[3]);
+                        }
+                    } else {
+                        for (uint8_t i = 0; i < CHL_NUM; i++) {
+                        showTmpEFX1[i] = 0;
+                        showTmpEFX2_1[i] = 0;
+                        showTmpEFX2_2[i] = 0;
+                        }
                     }
-
-                    addr[0] = (uint8_t)(int_index[0] * (16.0f / samp_info[smp_num[0]].len)) & 31;
-                    addr[1] = (uint8_t)(int_index[1] * (16.0f / samp_info[smp_num[1]].len)) & 31;
-                    addr[2] = (uint8_t)(int_index[2] * (16.0f / samp_info[smp_num[2]].len)) & 31;
-                    addr[3] = (uint8_t)(int_index[3] * (16.0f / samp_info[smp_num[3]].len)) & 31;
-                    // printf("%d %d %d %d\n", addr[0], addr[1], addr[2], addr[3]);
-                    ssd1306_display_text(&dev, 0, "CH1 CH2 CH3 CH4", 16, false);
-                    if (dispShowEfct) {
-                        if (tracker_data_pattern != NULL && tracker_data_pattern[part_table[part_point]] != NULL) {
-                            for (uint8_t i = 0; i < CHL_NUM; i++) {
-                                read_part_data(tracker_data_pattern, part_table[part_point], row_point, i, viewTmp);
-                                showTmpEFX1[i] = viewTmp[2];
-                                showTmpEFX2_1[i] = hexToDecimalTens(viewTmp[3]);
-                                showTmpEFX2_2[i] = hexToDecimalOnes(viewTmp[3]);
-                            }
-                        } else {
-                            for (uint8_t i = 0; i < CHL_NUM; i++) {
-                            showTmpEFX1[i] = 0;
-                            showTmpEFX2_1[i] = 0;
-                            showTmpEFX2_2[i] = 0;
-                            }
-                        }
-                        sprintf(efct, " %X%X%X %X%X%X %X%X%X %X%X%X",   showTmpEFX1[0], showTmpEFX2_1[0], showTmpEFX2_2[0],
-                                                                        showTmpEFX1[1], showTmpEFX2_1[1], showTmpEFX2_2[1],
-                                                                        showTmpEFX1[2], showTmpEFX2_1[2], showTmpEFX2_2[2],
-                                                                        showTmpEFX1[3], showTmpEFX2_1[3], showTmpEFX2_2[3]);
-                        ssd1306_display_text(&dev, 1, efct, 17, false);
-                    }
-                    ssd1306_display_text(&dev, 6, ten, 16, false);
-                    // ssd1306_display_text(&dev, 5, one, 16, false);
-                    if (!mute[0]) {
-                    for (x = 0; x < 32; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[0][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
-                        if (period[0]) {
-                            _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
-                        }
-                        volTemp = (vol[0]/2) % 64;
-                        _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
-                        if (x < volTemp) {
-                            _ssd1306_line(&dev, x, 58, x, 63, false);
-                        }
-                    }} else {
-                        _ssd1306_line(&dev, 0, 0, 31, 63, false);
-                        _ssd1306_line(&dev, 31, 0, 0, 63, false);
-                    }
-                    if (!mute[1]) {
-                    for (x = 32; x < 64; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[1][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
-                        if (period[1]) {
-                            _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
-                        }
-                        volTemp = vol[1]/2;
-                        _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
-                        if (x - 32 < volTemp) {
-                            _ssd1306_line(&dev, x, 58, x, 63, false);
-                        }
-                    }} else {
-                        _ssd1306_line(&dev, 32, 0, 63, 63, false);
-                        _ssd1306_line(&dev, 63, 0, 32, 63, false);
-                    }
-                    if (!mute[2]) {
-                    for (x = 64; x < 96; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[2][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
-                        if (period[2]) {
-                            _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
-                        }
-                        volTemp = vol[2]/2;
-                        _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
-                        if (x - 64 < volTemp) {
-                            _ssd1306_line(&dev, x, 58, x, 63, false);
-                        }
-                    }} else {
-                        _ssd1306_line(&dev, 64, 0, 95, 63, false);
-                        _ssd1306_line(&dev, 95, 0, 64, 63, false);
-                    }
-                    if (!mute[3]) {
-                    for (x = 96; x < 128; x++) {
-                        _ssd1306_line(&dev, x, 32, x, (((buffer_ch[3][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
-                        if (period[3]) {
-                            _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
-                        }
-                        volTemp = vol[3]/2;
-                        _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
-                        if (x - 96 < volTemp) {
-                            _ssd1306_line(&dev, x, 58, x, 63, false);
-                        }
-                    }} else {
-                        _ssd1306_line(&dev, 96, 0, 127, 63, false);
-                        _ssd1306_line(&dev, 127, 0, 96, 63, false);
-                    }
-                    ssd1306_show_buffer(&dev);
-                    vTaskDelay(1);
+                    sprintf(efct, " %X%X%X %X%X%X %X%X%X %X%X%X",   showTmpEFX1[0], showTmpEFX2_1[0], showTmpEFX2_2[0],
+                                                                    showTmpEFX1[1], showTmpEFX2_1[1], showTmpEFX2_2[1],
+                                                                    showTmpEFX1[2], showTmpEFX2_1[2], showTmpEFX2_2[2],
+                                                                    showTmpEFX1[3], showTmpEFX2_1[3], showTmpEFX2_2[3]);
+                    ssd1306_display_text(&dev, 1, efct, 17, false);
                 }
+                ssd1306_display_text(&dev, 6, ten, 16, false);
+                // ssd1306_display_text(&dev, 5, one, 16, false);
+                if (!mute[0]) {
+                for (x = 0; x < 32; x++) {
+                    _ssd1306_line(&dev, x, 32, x, (((buffer_ch[0][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
+                    if (period[0]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[0] * (64.0f / 743.0f))&63, false);
+                    }
+                    volTemp = (vol[0]/2) % 64;
+                    _ssd1306_line(&dev, addr[0], 8, addr[0], 47, false);
+                    if (x < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 0, 0, 31, 63, false);
+                    _ssd1306_line(&dev, 31, 0, 0, 63, false);
+                }
+                if (!mute[1]) {
+                for (x = 32; x < 64; x++) {
+                    _ssd1306_line(&dev, x, 32, x, (((buffer_ch[1][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
+                    if (period[1]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[1] * (64.0f / 743.0f))&63, false);
+                    }
+                    volTemp = vol[1]/2;
+                    _ssd1306_line(&dev, addr[1]+32, 8, addr[1]+32, 47, false);
+                    if (x - 32 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 32, 0, 63, 63, false);
+                    _ssd1306_line(&dev, 63, 0, 32, 63, false);
+                }
+                if (!mute[2]) {
+                for (x = 64; x < 96; x++) {
+                    _ssd1306_line(&dev, x, 32, x, (((buffer_ch[2][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
+                    if (period[2]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[2] * (64.0f / 743.0f))&63, false);
+                    }
+                    volTemp = vol[2]/2;
+                    _ssd1306_line(&dev, addr[2]+64, 8, addr[2]+64, 47, false);
+                    if (x - 64 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 64, 0, 95, 63, false);
+                    _ssd1306_line(&dev, 95, 0, 64, 63, false);
+                }
+                if (!mute[3]) {
+                for (x = 96; x < 128; x++) {
+                    _ssd1306_line(&dev, x, 32, x, (((buffer_ch[3][(x + (contr * 128)) * 2] >> 8) + 32) & 63), false);
+                    if (period[3]) {
+                        _ssd1306_pixel(&dev, x, (uint8_t)(period[3] * (64.0f / 743.0f))&63, false);
+                    }
+                    volTemp = vol[3]/2;
+                    _ssd1306_line(&dev, addr[3]+96, 8, addr[3]+96, 47, false);
+                    if (x - 96 < volTemp) {
+                        _ssd1306_line(&dev, x, 58, x, 63, false);
+                    }
+                }} else {
+                    _ssd1306_line(&dev, 96, 0, 127, 63, false);
+                    _ssd1306_line(&dev, 127, 0, 96, 63, false);
+                }
+                ssd1306_show_buffer(&dev);
+                vTaskDelay(1);
             } 
         }
     }
@@ -3102,7 +3084,16 @@ void Setting() {
     const uint8_t SETTING_NUM = 10;
     key_event_t optionKeyEvent;
 
-    const char *menuStr[SETTING_NUM] = {"Interpolation", "Show EFX in OSC", "Master Effect", "WAV Player", "Save Config", "Reset Default Config", "Snake!!!", "Export Config to sdcard", "Import Config from sdcard", "Close"};
+    const char *menuStr[SETTING_NUM] = {"Interpolation",
+                                        "Show EFX in OSC",
+                                        "Master Effect",
+                                        "WAV Player",
+                                        "Save Config",
+                                        "Reset Default Config",
+                                        "Reboot",
+                                        "Export Config to sdcard",
+                                        "Import Config from sdcard",
+                                        "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
     frame.drawFastHLine(0, 9, 160, 0xe71c);
@@ -3178,7 +3169,7 @@ void Setting() {
                     else sendPopUpEvent("Save failed", 1024);
                 }
                 if (optPos == 5) use_default_config();
-                if (optPos == 6) snake_mod = true;
+                if (optPos == 6) ESP.restart();
                 if (optPos == 7) copyFile(CONFIG_FILE_PATH, "/sdcard/esp32tracker.config");
                 if (optPos == 8) {copyFile("/sdcard/esp32tracker.config", CONFIG_FILE_PATH); readConfig(&config);};
                 if (optPos == SETTING_NUM - 1) {MenuPos = 0; break;}
@@ -3663,7 +3654,7 @@ void comp(void *arg) {
                     }
                     for (chl = 0; chl < CHL_NUM; chl++) {
                         if (period[chl] != 0) {
-                            frq[chl] = patch_table[samp_info[smp_num[chl]].finetune] / (float)(period[chl] + VibratoItem[chl]);
+                            frq[chl] = patch_table[samp_info[smp_num[chl]].finetune] / (period[chl] + VibratoItem[chl]);
                         } else {
                             frq[chl] = 0;
                         }
@@ -4115,6 +4106,7 @@ void editConfigCmd(int argc, const char* argv[]) {
             printf("enbFltr: CHL1 %d, CHL2 %d, CHL3 %d, CHL4 %d\n", config.enbFltr[0], config.enbFltr[1], config.enbFltr[2], config.enbFltr[3]);
             printf("global_vol: %f\n", config.global_vol);
             printf("stroMix: %f\n", config.stroMix);
+            printf("engine_clock_speed: %dHz\n", config.engine_clock_speed);
             printf("\nMASTER_DELAY_CONFIG:\n");
             printf("decayRate: %f\n", config.master_delay_config.decayRate);
             printf("dryMix: %f\n", config.master_delay_config.dryMix);
@@ -4197,6 +4189,12 @@ void editConfigCmd(int argc, const char* argv[]) {
             } else {
                 printf("stroMix: %f\n", config.stroMix);
             }
+        } else if (strcmp(argv[1], "engine_clock_speed") == 0) {
+            if (writeMode) {
+                config.engine_clock_speed = atof(argv[2]);
+            } else {
+                printf("engine_clock_speed: %dHz\n", config.engine_clock_speed);
+            }
         } else if (strncmp(argv[1], "master_delay_config.", 20) == 0) {
             const char *field = argv[1] + 20; // 跳过 "master_delay_config."
             if (strcmp(field, "decayRate") == 0) {
@@ -4244,6 +4242,14 @@ void printCmd(int argc, const char* argv[]) {
     if (argc > 1) printf("%s\n", argv[1]);
 }
 
+void displayBack_lcd(const char *str, bool enter) {
+    if (tft.getCursorY() > 127) {
+        tft.setCursor(0, 0);
+        tft.fillScreen(0x0000);
+    }
+    tft.printf(enter ? "%s\n" : "%s", str);
+}
+
 // void getHardwareStatus(int argc, const char* argv[]);
 
 void recovery_mode() {
@@ -4254,9 +4260,11 @@ void recovery_mode() {
     tft.setCursor(0, 0);
     tft.printf("ESP32Tracker Recovery Mode\n");
     tft.printf("BUILD DATA:\n%s %s\n", __DATE__, __TIME__);
+    in_recovery_mode = true;
     SerialTerminal terminal;
     SerialTerminal::instance = &terminal;
-    terminal.begin(115200);
+    tft.printf("Serial BaudRate=115200\n");
+    terminal.begin(115200, displayBack_lcd);
     terminal.addCommand("test", testCmd);
     terminal.addCommand("reboot", restartCmd);
     terminal.addCommand("config", editConfigCmd);
@@ -4264,14 +4272,21 @@ void recovery_mode() {
     terminal.addCommand("lcd_print", lcd_printCmd);
     terminal.addCommand("print", printCmd);
     tft.setTextWrap(true);
-    tft.printf("Serial BaudRate=115200\n");
-    tft.printf("Serial Terminal Started\n");
     for (;;) {
         terminal.update();
         vTaskDelay(32);
     }
 }
 //----------------RECOVERY MODE--------------------------
+
+void update_patch_table(uint32_t clock_freq) {
+    float multiplier = powf(2, 1.0 / 96.0);
+    for (uint8_t i = 0; i < 16; i++) {
+        int8_t finetune_value = i < 8 ? i : i - 16;
+        patch_table[i] = clock_freq * powf(multiplier, finetune_value);
+        // printf("finetune->%d = %.2f\n", finetune_value, patch_table[i]);
+    }
+}
 
 void setup()
 {
@@ -4319,6 +4334,7 @@ void setup()
     } else {
         tft.printf("Read configuration finish\n");
     }
+    update_patch_table(config.engine_clock_speed);
     tft.printf("Init sdcard...\n");
     sdmmc_card_t *card;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -4397,7 +4413,7 @@ void setup()
     i2s_zero_dma_buffer(I2S_NUM_0);
     tft.printf("Sound Driver Ready.\n");
     new_tracker_file();
-    tft.printf("MAIN INIT FINISH!\nPress OK to continue boot...\nPress BACK to enter recovery mode...");
+    tft.printf("MAIN INIT FINISH!\nPress OK to continue boot...\nPress BACK to enter recovery mode...\n");
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) {
             if (optionKeyEvent.num == KEY_OK) break;
@@ -4405,11 +4421,11 @@ void setup()
         }
         vTaskDelay(128);
     }
+    tft.printf("BOOTING...\n");
     if (config.enbMasterDelay) {
         master_delay_L.initialize(config.master_delay_config);
         master_delay_R.initialize(config.master_delay_config);
     }
-    tft.printf("BOOTING...\n");
     xTaskCreatePinnedToCore(&display_lcd, "tracker_ui", 10240, NULL, 5, NULL, 1);
 }
 

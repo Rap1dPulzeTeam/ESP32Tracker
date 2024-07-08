@@ -39,13 +39,15 @@
 #include "esp32/clk.h"
 #include "trackerIcon.h"
 
+#include "TM1650.h"
+
 #include "SerialTerminal.h"
 
 #define MOUNT_POINT "/sdcard"
 
-#define TFT_DC 3
-#define TFT_CS 10
-#define TFT_RST 8
+#define TFT_DC 46
+#define TFT_CS 11
+#define TFT_RST 0
 uint8_t tracker_data_header[1084];
 uint8_t **tracker_data_pattern = NULL;
 int8_t *tracker_data_sample[33];
@@ -80,8 +82,13 @@ bool editMod = false;
 uint16_t limitStats;
 bool fromOtherPage = false;
 
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-Adafruit_MPR121 touchPad = Adafruit_MPR121();
+SPIClass LCD_SPI(HSPI);
+
+Adafruit_ST7735 tft = Adafruit_ST7735(&LCD_SPI, TFT_CS, TFT_DC, TFT_RST);
+// Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, 12, 13, TFT_RST);
+Adafruit_MPR121 touchPad0 = Adafruit_MPR121();
+Adafruit_MPR121 touchPad1 = Adafruit_MPR121();
+TM1650 tm1650(&Wire1);
 ESPRotary rotary;
 bool RtyL = false;
 bool RtyR = false;
@@ -120,7 +127,10 @@ QueueHandle_t xOptionKeyQueue;
 #define KEY_A 7
 #define KEY_B 8
 #define KEY_C 9
-#define LCD_BK 9
+#define KEY_D 10
+#define KEY_BACK 11
+
+#define LCD_BK 10
 
 #define SET_DELAY 0
 #define SET_FILTER 1
@@ -149,12 +159,14 @@ class aFrameBuffer : public Adafruit_GFX {
     }
 
     void display() {
-        if (PopUpExist) refsPopUp();tft.drawRGBBitmap(0, 0, lcd_buffer, 160, 128);
+        if (PopUpExist) refsPopUp();
+        tft.drawRGBBitmap(0, 0, lcd_buffer, 160, 128);
         if (snapShot) {
             snapShot = false;
             save_rgb565_bmp("/sdcard/snapshot_lcd.bmp", lcd_buffer, 160, 128);
             printf("SnapShot Save finish!\n");
         }
+        // vTaskDelay(4);
     }
 };
 
@@ -188,6 +200,7 @@ uint32_t wave_MAX_R = 0;
 uint32_t wave_MAX_L_OUT = 0;
 uint32_t wave_MAX_R_OUT = 0;
 bool MAX_COMP_FINISH = false;
+uint8_t key_map[16] = {KEY_L, KEY_DOWN, KEY_R, KEY_UP, KEY_OK, KEY_BACK, 255, KEY_SPACE, KEY_A, KEY_B, KEY_C, KEY_D, 255, 255, 255, 255};
 
 #define CONFIG_FILE_PATH "/spiffs/esp32tracker.config"
 
@@ -1430,12 +1443,6 @@ char* fileSelect(const char* root_path) {
                     SelPos = 0;
                     AnimStep = 0;
                     CurChange = true;
-                } else {
-                    for (uint16_t i = 0; i < count; i++) {
-                        free(files[i].name);
-                    }
-                    free(files);
-                    return NULL;
                 }
                 break;
             case KEY_UP:
@@ -1493,6 +1500,12 @@ char* fileSelect(const char* root_path) {
                 } else {
                     break;
                 }
+            } else if (optionKeyEvent.num == KEY_BACK) {
+                for (uint16_t i = 0; i < count; i++) {
+                    free(files[i].name);
+                }
+                free(files);
+                return NULL;
             }
         }}
     }
@@ -1873,7 +1886,7 @@ void MainPage() {
 
         // printf("FnA STAT %d\n", fnA);
 
-        if (PerStat == pdTRUE && optionKeyEvent.num == KEY_SPACE) {
+        if (PerStat == pdTRUE && optionKeyEvent.status == KEY_ATTACK && optionKeyEvent.num == KEY_SPACE) {
             PerStat = pdFALSE;
             if (!playStat) row_point = 0;
             playStat = !playStat;
@@ -1916,7 +1929,6 @@ void MainPage() {
                 }
             }
         }
-
         if (windowsClose) {
             windowsClose = false;
             frame.fillRect(0, 24, 160, 30, ST7735_BLACK);
@@ -2168,7 +2180,6 @@ void MainPage() {
         frame.printf("FILE");
         frame.setCursor(82, 44);
         frame.printf("SAMP");}
-
         if (ChlMenuPos) {
             char menuShow[15];
             sprintf(menuShow, "CHL%d OPTION", ChlPos);
@@ -2505,7 +2516,7 @@ void effectSettingDelay(uint8_t index) {
     key_event_t optionKeyEvent;
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
-            if (optionKeyEvent.num == 127) {MenuPos = 3; break;};
+            if (optionKeyEvent.num == KEY_BACK) {MenuPos = 3; break;};
             switch (optionKeyEvent.num)
             {
             case KEY_L:
@@ -2566,7 +2577,7 @@ void masterEffectSetting() {
         frame.display();
         vTaskDelay(4);
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
-            if (optionKeyEvent.num == 127) {MenuPos = 3; break;};
+            if (optionKeyEvent.num == KEY_BACK) {MenuPos = 3; break;};
             switch (optionKeyEvent.num)
             {
             case KEY_L:
@@ -2885,7 +2896,7 @@ void* importSamp(int8_t *sampData) {
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) break;
-            if (optionKeyEvent.num == KEY_SPACE) {
+            if (optionKeyEvent.status == KEY_ATTACK && optionKeyEvent.num == KEY_SPACE) {
                 if (playing) vTaskDelete(&PREVSAMP);
                 else xTaskCreatePinnedToCore(&prevSamp, "Prev Sample", 4096, sampFile, 3, &PREVSAMP, 0);
                 playing = !playing;
@@ -3208,7 +3219,7 @@ void display_lcd(void *arg) {
     xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
     vTaskDelay(512);
     xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
-    xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
+    // xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     MainReDraw();
     MenuPos = 0;
     read_pattern_table(tracker_data_header);
@@ -3837,7 +3848,7 @@ void IRAM_ATTR setKeyOK() {
     if (RTY_MOD > 3) RTY_MOD = 0;
     RtyB = true;
 }
-
+/*
 void refesMpr121(void *arg) {
     uint16_t lasttouched = 0;
     uint16_t currtouched = 0;
@@ -3873,15 +3884,19 @@ void refesMpr121(void *arg) {
         vTaskDelay(32);
     }
 }
-
+*/
 void input(void *arg) {
-    pinMode(21, INPUT_PULLUP);
+    // pinMode(21, INPUT_PULLUP);
+    Wire1.begin(45, 48, 200000);
+    tm1650.init();
+    touchPad0.begin(0x5A, &Wire1);
+    touchPad1.begin(0x5B, &Wire1);
     rotary.begin(38, 39, 2);
     rotary.setChangedHandler(rotate);
     // rotary.setLeftRotationHandler(showDirection);
     // rotary.setRightRotationHandler(showDirection);
     Serial.begin(115200);
-    attachInterrupt(21, setKeyOK, FALLING);
+    // attachInterrupt(21, setKeyOK, FALLING);
     key_event_t optionKeyEvent;
     bool fnA = false;
     bool fnB = false;
@@ -3892,8 +3907,24 @@ void input(void *arg) {
     };
     temp_sensor_set_config(temp_sensor);
     temp_sensor_start();
+    byte buttons;
+    bool buttons_stat = false;
+    bool buttons_stat_last = false;
     tft.printf("INPUT Ready.\n");
     for (;;) {
+        buttons = tm1650.getButtons();
+        buttons_stat = (buttons & 0b01000000) >> 6;
+        if (buttons_stat != buttons_stat_last) {
+            optionKeyEvent.num = key_map[(buttons & 0b00111000) >> 1 | (buttons & 0b00000011)];
+            optionKeyEvent.status = buttons_stat ? KEY_ATTACK : KEY_RELEASE;
+            if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
+                printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
+            } else {
+                printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
+            }
+        }
+        printf("MPR121 %4d %4d\n", touchPad0.touched(), touchPad1.touched());
+        buttons_stat_last = buttons_stat;
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
             printf("INPUT: %d\n", received);
@@ -3948,7 +3979,7 @@ void input(void *arg) {
                 }
             }
             if (received == 127) {
-                optionKeyEvent.num = 127;
+                optionKeyEvent.num = KEY_BACK;
                 optionKeyEvent.status = KEY_ATTACK;
                 if (xQueueSend(xOptionKeyQueue, &optionKeyEvent, portMAX_DELAY) != pdPASS) {
                     printf("WARNING: OPTIONKEY QUEUE LOSS A EVENT!\n");
@@ -4007,7 +4038,7 @@ void input(void *arg) {
                 printf("FREE MEM: %d\n", esp_get_free_heap_size());
             }
         }
-        vTaskDelay(2);
+        vTaskDelay(32);
         if (RtyB) {
             RtyB = false;
             switch (RTY_MOD)
@@ -4293,10 +4324,13 @@ void setup()
     pinMode(LCD_BK, OUTPUT);
     analogWriteFrequency(22050);
     analogWrite(LCD_BK, 0);
+    LCD_SPI.begin(13, 0, 12, -1);
+    // LCD_SPI.setFrequency(80000000);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     tft.initR(INITR_BLACKTAB);
-    tft.setSPISpeed(79000000);
-    tft.setRotation(3);
+    tft.setColRowStart(2, 1);
+    tft.setSPISpeed(80000000);
+    tft.setRotation(1);
     tft.fillScreen(ST7735_BLACK);
     Bootanimation();
     tft.setFont(&font3x5);
@@ -4341,9 +4375,12 @@ void setup()
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 1;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    slot_config.clk = GPIO_NUM_48;
-    slot_config.cmd = GPIO_NUM_47;
-    slot_config.d0 = GPIO_NUM_45;
+    slot_config.clk = GPIO_NUM_6;
+    slot_config.cmd = GPIO_NUM_7;
+    slot_config.d0 = GPIO_NUM_5;
+    // slot_config.d1 = GPIO_NUM_4;
+    // slot_config.d2 = GPIO_NUM_16;
+    // slot_config.d3 = GPIO_NUM_15;
     key_event_t optionKeyEvent;
     ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
     tft.printf("Init sdcard finish!\n");
@@ -4417,7 +4454,7 @@ void setup()
     for (;;) {
         if (readOptionKeyEvent == pdTRUE) {
             if (optionKeyEvent.num == KEY_OK) break;
-            if (optionKeyEvent.num == 127) recovery_mode();
+            if (optionKeyEvent.num == KEY_BACK) recovery_mode();
         }
         vTaskDelay(128);
     }

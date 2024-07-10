@@ -22,7 +22,6 @@
 #include "NULL_MOD.h"
 #include "driver/i2s.h"
 #include "driver/gpio.h"
-#include "driver/temp_sensor.h"
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -36,7 +35,7 @@
 #include "abcd.h"
 #include "3x5font.h"
 #include "JetBrainsMonoNL_MediumItalic8pt7b.h"
-#include "esp32/clk.h"
+// #include "esp32/clk.h"
 #include "trackerIcon.h"
 
 #include "TM1650.h"
@@ -101,6 +100,8 @@ bool RtyB = false;
 uint8_t RTY_MOD = RTY_VOL;
 
 static uint8_t pat_max = 0;
+
+#define M_PI_F 3.14159265358979323846f
 
 typedef enum {
     KEY_IDLE,
@@ -2897,7 +2898,7 @@ void* importSamp(int8_t *sampData) {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) break;
             if (optionKeyEvent.status == KEY_ATTACK && optionKeyEvent.num == KEY_SPACE) {
-                if (playing) vTaskDelete(&PREVSAMP);
+                if (playing) vTaskDelete(PREVSAMP);
                 else xTaskCreatePinnedToCore(&prevSamp, "Prev Sample", 4096, sampFile, 3, &PREVSAMP, 0);
                 playing = !playing;
             }
@@ -3901,12 +3902,6 @@ void input(void *arg) {
     bool fnA = false;
     bool fnB = false;
     bool fnC = false;
-    temp_sensor_config_t temp_sensor = {
-        .dac_offset = TSENS_DAC_L2,
-        .clk_div = 6,
-    };
-    temp_sensor_set_config(temp_sensor);
-    temp_sensor_start();
     byte buttons;
     bool buttons_stat = false;
     bool buttons_stat_last = false;
@@ -4007,9 +4002,6 @@ void input(void *arg) {
             }
             if (received == 50) {
                 TestNote = true;
-            }
-            if (received == 102) {
-                printf("Current CPU frequency: %u Hz\n", esp_clk_cpu_freq());
             }
             if (received == 116) {
                 printf("CPU Core Temp: %.1f °C\n", temperatureRead());
@@ -4262,7 +4254,7 @@ void editConfigCmd(int argc, const char* argv[]) {
 }
 
 void getVersion(int argc, const char* argv[]) {
-    printf("ESP32Tracker V0.1\nlibchara-dev\nBuilding with ArduinoESP32 (IDF4.4.6)\nBuild data: %s %s\nEnable -Ofast\n", __DATE__, __TIME__);
+    printf("ESP32Tracker V0.1\nlibchara-dev\nBuilding with ArduinoESP32 (IDF5.1.4)\nBuild data: %s %s\nEnable -Ofast\n", __DATE__, __TIME__);
 }
 
 void lcd_printCmd(int argc, const char* argv[]) {
@@ -4322,14 +4314,14 @@ void update_patch_table(uint32_t clock_freq) {
 void setup()
 {
     pinMode(LCD_BK, OUTPUT);
-    analogWriteFrequency(22050);
+    analogWriteFrequency(LCD_BK, 22050);
     analogWrite(LCD_BK, 0);
     LCD_SPI.begin(13, 0, 12, -1);
-    // LCD_SPI.setFrequency(80000000);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     tft.initR(INITR_BLACKTAB);
     tft.setColRowStart(2, 1);
-    tft.setSPISpeed(80000000);
+    // LCD_SPI.setFrequency(80000000);
+    // tft.setSPISpeed(80000000);
     tft.setRotation(1);
     tft.fillScreen(ST7735_BLACK);
     Bootanimation();

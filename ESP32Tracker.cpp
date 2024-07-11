@@ -714,31 +714,36 @@ int16_t temp;
 bool master_limit_enb = true;
 bool master_tube_enb = false;
 
-// Limit
-typedef struct {
-    int16_t threshold;
-    int16_t soft_knee;
-} Limiter;
-
-void initLimiter(Limiter *limiter, int16_t threshold, float soft_knee) {
-    limiter->threshold = threshold;
-    limiter->soft_knee = soft_knee;
-}
-
-static inline int16_t audioLimit(Limiter *limiter, int32_t inputSample, uint16_t *limitOutComp) {
-    int16_t absInputSample = inputSample > 0 ? inputSample : -inputSample;
-
-    if (absInputSample > limiter->threshold) {
-        *limitOutComp = absInputSample - limiter->threshold;
-        float normalizedExcess = (float)(absInputSample - limiter->threshold) / limiter->soft_knee;
-        float compressedExcess = tanhf(normalizedExcess) * limiter->soft_knee;
-        int16_t compressedSample = limiter->threshold + (int16_t)compressedExcess;
-        return inputSample > 0 ? compressedSample : -compressedSample;
-    } else {
-        *limitOutComp = 0;
-        return inputSample;
+class Limiter {
+public:
+    Limiter(int16_t threshold, float soft_knee) {
+        init(threshold, soft_knee);
     }
-}
+
+    void init(int16_t threshold, float soft_knee) {
+        this->threshold = threshold;
+        this->soft_knee = soft_knee;
+    }
+
+    int16_t audioLimit(int32_t inputSample, uint16_t *limitOutComp) {
+        int16_t absInputSample = inputSample > 0 ? inputSample : -inputSample;
+
+        if (absInputSample > threshold) {
+            *limitOutComp = absInputSample - threshold;
+            float normalizedExcess = (float)(absInputSample - threshold) / soft_knee;
+            float compressedExcess = tanhf(normalizedExcess) * soft_knee;
+            int16_t compressedSample = threshold + (int16_t)compressedExcess;
+            return inputSample > 0 ? compressedSample : -compressedSample;
+        } else {
+            limitOutComp = 0;
+            return inputSample;
+        }
+    }
+
+private:
+    int16_t threshold;
+    float soft_knee;
+};
 
 // 电子管模拟器
 int16_t tubeSimulator(int16_t inputSample) {
@@ -775,7 +780,8 @@ void i2s_write_task(void *arg) {
     }
 }
 
-Limiter limiter;
+Limiter master_limiter(16380, 16380);
+
 AudioDelay master_delay_L;
 AudioDelay master_delay_R;
 
@@ -3360,8 +3366,8 @@ void comp(void *arg) {
                 audio_tempR = buffer_ch[chlMap[2]][buffPtr] + buffer_ch[chlMap[3]][buffPtr];
 
                 if (master_limit_enb) {
-                    audio_tempL = audioLimit(&limiter, audio_tempL, &limitStats);
-                    audio_tempR = audioLimit(&limiter, audio_tempR, &limitStats);
+                    audio_tempL = master_limiter.audioLimit(audio_tempL, &limitStats);
+                    audio_tempR = master_limiter.audioLimit(audio_tempR, &limitStats);
                 }
 
                 audio_tempL = antiAliasingL.process(audio_tempL);
@@ -3884,7 +3890,7 @@ void refesMpr121(void *arg) {
 void input(void *arg) {
     pinMode(21, INPUT_PULLUP);
     Wire1.begin(45, 48, 400000);
-    // tm1650.init();
+    tm1650.init();
     touchPad0.begin(0x5A, &Wire1);
     touchPad1.begin(0x5B, &Wire1);
     rotary.begin(38, 39, 4);
@@ -3903,7 +3909,7 @@ void input(void *arg) {
     uint16_t touchStat1;
     tft.printf("INPUT Ready.\n");
     for (;;) {
-        // buttons = tm1650.getButtons();
+        buttons = tm1650.getButtons();
         buttons_stat = (buttons & 0b01000000) >> 6;
         if (buttons_stat != buttons_stat_last) {
             optionKeyEvent.num = key_map[(buttons & 0b00111000) >> 1 | (buttons & 0b00000011)];
@@ -4025,7 +4031,7 @@ void input(void *arg) {
                 vTaskPrioritySet(NULL, 2);
             }
             if (received == 109) {
-                printf("FREE MEM: %d\n", esp_get_free_heap_size());
+                printf("FREE MEM: %ld\n", esp_get_free_heap_size());
             }
         }
         vTaskDelay(32);
@@ -4318,7 +4324,7 @@ void setup()
     // LCD_SPI.setFrequency(80000000);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     tft.initR(INITR_BLACKTAB);
-    tft.setSPISpeed(70000000);
+    tft.setSPISpeed(30000000);
     tft.setColRowStart(2, 1);
     tft.setRotation(1);
     tft.fillScreen(ST7735_BLACK);
@@ -4327,7 +4333,6 @@ void setup()
     tft.setTextWrap(false);
     tft.setCursor(0, 0);
     frame.setFont(&abcd);
-    initLimiter(&limiter, 16384, 16380);
     xTouchPadQueue = xQueueCreate(4, sizeof(key_event_t));
     xOptionKeyQueue = xQueueCreate(4, sizeof(key_event_t));
     popUpEventQueue = xQueueCreate(4, sizeof(popUpEvent_t));

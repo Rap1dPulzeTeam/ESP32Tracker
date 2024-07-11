@@ -19,7 +19,7 @@
 #endif
 #define CONFIG_OFFSETX 0
 
-#define I2C_MASTER_FREQ_HZ 400000 /*!< I2C clock of SSD1306 can run at 400 kHz max. */
+#define I2C_MASTER_FREQ_HZ 1100000 /*!< I2C clock of SSD1306 can run at 400 kHz max. */
 
 void i2c_master_init(SSD1306_t * dev, int16_t sda, int16_t scl, int16_t reset)
 {
@@ -29,7 +29,7 @@ void i2c_master_init(SSD1306_t * dev, int16_t sda, int16_t scl, int16_t reset)
 		.scl_io_num = scl,
 		.sda_pullup_en = GPIO_PULLUP_ENABLE,
 		.scl_pullup_en = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = 1100000
+		.master.clk_speed = I2C_MASTER_FREQ_HZ
 	};
 	ESP_ERROR_CHECK(i2c_param_config(I2C_NUM, &i2c_config));
 	ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM, I2C_MODE_MASTER, 0, 0, 0));

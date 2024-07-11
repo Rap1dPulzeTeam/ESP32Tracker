@@ -81,7 +81,7 @@ bool editMod = false;
 uint16_t limitStats;
 bool fromOtherPage = false;
 
-SPIClass LCD_SPI(HSPI);
+SPIClass LCD_SPI(FSPI);
 
 Adafruit_ST7735 tft = Adafruit_ST7735(&LCD_SPI, TFT_CS, TFT_DC, TFT_RST);
 // Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, 12, 13, TFT_RST);
@@ -1132,7 +1132,7 @@ LowPassFilter chl_filter[4] = {
 
 int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
     // Update indices
-    if (mute[chl]) return 0;
+    if (mute[chl] || !vole || tracker_data_sample[smp_num] == NULL) return 0;
     float increment = freq / SMP_RATE;
     frac_index[chl] += increment;
     if (frac_index[chl] >= 1.0) {
@@ -1153,10 +1153,6 @@ int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t l
     int idx = int_index[chl];
     float frac = frac_index[chl];
     int16_t result = 0;
-
-    if (tracker_data_sample[smp_num] == NULL) {
-        return 0;
-    }
     
     // Perform interpolation
     if (config.enbLine) {
@@ -3220,7 +3216,6 @@ void display_lcd(void *arg) {
     xTaskCreate(&comp, "Sound Eng", 8192, NULL, 5, &SOUND_ENG);
     vTaskDelay(512);
     xTaskCreatePinnedToCore(backlightCtrl, "BACKLIGHT++", 2048, NULL, 1, NULL, 0);
-    // xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     MainReDraw();
     MenuPos = 0;
     read_pattern_table(tracker_data_header);
@@ -3846,7 +3841,7 @@ void IRAM_ATTR rotate(ESPRotary& rotary) {
 
 void IRAM_ATTR setKeyOK() {
     RTY_MOD++;
-    if (RTY_MOD > 3) RTY_MOD = 0;
+    if (RTY_MOD > 3) RTY_MOD = 1;
     RtyB = true;
 }
 /*
@@ -3887,17 +3882,16 @@ void refesMpr121(void *arg) {
 }
 */
 void input(void *arg) {
-    // pinMode(21, INPUT_PULLUP);
-    Wire1.begin(45, 48, 200000);
-    tm1650.init();
+    pinMode(21, INPUT_PULLUP);
+    Wire1.begin(45, 48, 400000);
+    // tm1650.init();
     touchPad0.begin(0x5A, &Wire1);
     touchPad1.begin(0x5B, &Wire1);
-    rotary.begin(38, 39, 2);
+    rotary.begin(38, 39, 4);
+    xTaskCreatePinnedToCore(&RotaryRefs, "Rotary", 1024, NULL, 5, NULL, 0);
     rotary.setChangedHandler(rotate);
-    // rotary.setLeftRotationHandler(showDirection);
-    // rotary.setRightRotationHandler(showDirection);
     Serial.begin(115200);
-    // attachInterrupt(21, setKeyOK, FALLING);
+    attachInterrupt(21, setKeyOK, RISING);
     key_event_t optionKeyEvent;
     bool fnA = false;
     bool fnB = false;
@@ -3905,9 +3899,11 @@ void input(void *arg) {
     byte buttons;
     bool buttons_stat = false;
     bool buttons_stat_last = false;
+    uint16_t touchStat0;
+    uint16_t touchStat1;
     tft.printf("INPUT Ready.\n");
     for (;;) {
-        buttons = tm1650.getButtons();
+        // buttons = tm1650.getButtons();
         buttons_stat = (buttons & 0b01000000) >> 6;
         if (buttons_stat != buttons_stat_last) {
             optionKeyEvent.num = key_map[(buttons & 0b00111000) >> 1 | (buttons & 0b00000011)];
@@ -3918,7 +3914,9 @@ void input(void *arg) {
                 printf("INFO: OPTIONKEY SUCCESSFULLY SENT A EVENT. NUM=%d STATUS=%s\n", optionKeyEvent.num, optionKeyEvent.status == KEY_ATTACK ? "ATTACK" : "RELEASE");
             }
         }
-        printf("MPR121 %4d %4d\n", touchPad0.touched(), touchPad1.touched());
+        touchStat0 = touchPad0.touched();
+        touchStat1 = touchPad1.touched();
+        if (touchStat0 || touchStat1) printf("MPR121 %4d %4d\n", touchPad0.touched(), touchPad1.touched());
         buttons_stat_last = buttons_stat;
         if (Serial.available() > 0) {
             uint16_t received = Serial.read();
@@ -4316,12 +4314,12 @@ void setup()
     pinMode(LCD_BK, OUTPUT);
     analogWriteFrequency(LCD_BK, 22050);
     analogWrite(LCD_BK, 0);
-    LCD_SPI.begin(13, 0, 12, -1);
+    LCD_SPI.begin(13, -1, 12, -1);
+    // LCD_SPI.setFrequency(80000000);
     xTaskCreatePinnedToCore(&display, "wave_view", 8192, NULL, 5, NULL, 0);
     tft.initR(INITR_BLACKTAB);
+    tft.setSPISpeed(70000000);
     tft.setColRowStart(2, 1);
-    // LCD_SPI.setFrequency(80000000);
-    // tft.setSPISpeed(80000000);
     tft.setRotation(1);
     tft.fillScreen(ST7735_BLACK);
     Bootanimation();
@@ -4377,7 +4375,7 @@ void setup()
     ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
     tft.printf("Init sdcard finish!\n");
     tft.printf("Init INPUT Services...\n");
-    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 2, &KEY_INPUT, 0);
+    xTaskCreatePinnedToCore(&input, "input", 4096, NULL, 3, &KEY_INPUT, 0);
     while (ret != ESP_OK) {
         dispSdcardError = true;
         analogWrite(LCD_BK, 255);

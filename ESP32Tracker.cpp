@@ -20,7 +20,7 @@
 #include <dirent.h>
 #include "listfile.h"
 #include "NULL_MOD.h"
-#include "driver/i2s.h"
+#include "driver/i2s_std.h"
 #include "driver/gpio.h"
 
 #include "esp_vfs_fat.h"
@@ -53,6 +53,28 @@ int8_t *tracker_data_sample[33];
 uint8_t *tracker_data_total;
 // uint8_t *tracker_data;
 
+#define SMP_RATE 48000
+#define BUFF_SIZE 1024
+
+i2s_chan_handle_t i2s_tx_handle;
+i2s_chan_config_t i2s_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+i2s_std_config_t i2s_std_cfg = {
+    .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SMP_RATE),
+    .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+    .gpio_cfg = {
+        .mclk = I2S_GPIO_UNUSED,
+        .bclk = GPIO_NUM_42,
+        .ws = GPIO_NUM_40,
+        .dout = GPIO_NUM_41,
+        .din = I2S_GPIO_UNUSED,
+        .invert_flags = {
+            .mclk_inv = false,
+            .bclk_inv = false,
+            .ws_inv = false,
+        },
+    },
+};
+
 void read_pattern_table(uint8_t head_data[1084]);
 void read_samp_info(uint8_t head_data[1084]);
 inline void read_part_data(uint8_t** tracker_data, uint8_t pattern_index, uint8_t row_index, uint8_t channel_index, uint16_t part_data[4]);
@@ -70,7 +92,6 @@ uint8_t NUM_PATTERNS;
 #define NUM_ROWS 64
 #define CHL_NUM 4
 #define PATTERN_SIZE (NUM_ROWS * CHL_NUM * 4)
-#define BUFF_SIZE 1024
 
 bool recMod = false;
 FILE *export_wav_file;
@@ -173,8 +194,6 @@ class aFrameBuffer : public Adafruit_GFX {
 
 aFrameBuffer frame(160, 128);
 
-#define SMP_RATE 48000
-#define SMP_BIT 8
 int16_t *buffer_ch[CHL_NUM];
 void* buffer;
 float time_step = 1.0 / SMP_RATE;
@@ -774,7 +793,7 @@ TaskHandle_t I2S_WRITE_H;
 void i2s_write_task(void *arg) {
     for (;;) {
         if (i2s_write_config.write_src != NULL) 
-            i2s_write(I2S_NUM_0, i2s_write_config.write_src, i2s_write_config.write_size, &wrin, portMAX_DELAY);
+            i2s_channel_write(i2s_tx_handle, i2s_write_config.write_src, i2s_write_config.write_size, &wrin, portMAX_DELAY);
         i2s_write_config.status = false;
         vTaskSuspend(NULL);
     }
@@ -1571,7 +1590,6 @@ int8_t fileOpt() {
         dispReadingFile = true;
         vTaskSuspend(SOUND_ENG);
         memset(buffer, 0, BUFF_SIZE * sizeof(audio16BitStro));
-        i2s_zero_dma_buffer(I2S_NUM_0);
         int8_t ret = read_tracker_file(fileName);
         free(fileName);
         uint16_t *snap = (uint16_t*)malloc(160*128*sizeof(uint16_t));
@@ -2417,13 +2435,12 @@ void wav_player() {
     buffer16BitStro = (audio16BitStro*)buffer;
     memset(buffer, 0, 2560 * sizeof(audio16BitStro));
     if (audio_master_write(buffer, 1, sizeof(audio16BitStro), 2560) != 0) exit(-1);
-    i2s_zero_dma_buffer(I2S_NUM_0);
     char *wave_file_name = fileSelect("/sdcard");
     wave_file = fopen(wave_file_name, "rb");
     free(wave_file_name);
     WavHeader_t header;
     parseWavHeader(wave_file, &header);
-    i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
+    // i2s_set_clk(I2S_NUM_0, header.sampleRate, header.bitsPerSample, (i2s_channel_t)header.numChannels);
     printf("WAV File Information:\n");
     printf("Sample Rate: %u Hz\n", header.sampleRate);
     printf("Channels: %u\n", header.numChannels);
@@ -2497,8 +2514,7 @@ void wav_player() {
     memset(buffer, 0, BUFF_SIZE * sizeof(audio16BitStro));
     fclose(wave_file);
     vTaskDelay(16);
-    i2s_zero_dma_buffer(I2S_NUM_0);
-    i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
+    // i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
     MenuPos = 0;
     vTaskResume(SOUND_ENG);
     view_mode = false;
@@ -2684,7 +2700,6 @@ uint8_t prevBitsPreSamp;
 void prevSamp(void *arg) {
     vTaskSuspend(SOUND_ENG);
     memset(buffer, 0, BUFF_SIZE*sizeof(audio16BitStro));
-    i2s_zero_dma_buffer(I2S_NUM_0);
     static uint32_t prevSampStart;
     static uint32_t prevSampEnd;
     FILE *sampFile = (FILE *) arg;
@@ -3695,7 +3710,6 @@ void comp(void *arg) {
                         period[s] = 0;
                         frq[s] = 0;
                     }
-                    i2s_zero_dma_buffer(I2S_NUM_0);
                     vTaskDelay(1);
                     tick_speed = 6;
                     BPM = 125;
@@ -4418,31 +4432,15 @@ void setup()
     //tft.printf("Init TOUCHPAD Services...\n");
     //xTaskCreatePinnedToCore(&refesMpr121, "MPR121", 4096, NULL, 0, NULL, 0);
     tft.printf("Init Sound Driver...\n");
-    static const int i2s_num = 0; // i2s port number
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-        .sample_rate = SMP_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
-        .dma_buf_len = 256,
-        .use_apll = false,
-        .tx_desc_auto_clear = false,
-        .fixed_mclk = 0
-    };
 
-    static const i2s_pin_config_t pin_config = {
-        .bck_io_num = 42,
-        .ws_io_num = 40,
-        .data_out_num = 41,
-        .data_in_num = I2S_PIN_NO_CHANGE
-    };
-    tft.printf("I2S INSTALL %d\n", i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL));
-    tft.printf("I2S SETPIN %d\n", i2s_set_pin(I2S_NUM_0, &pin_config));
-    i2s_set_clk(I2S_NUM_0, SMP_RATE, I2S_BITS_PER_CHAN_16BIT, I2S_CHANNEL_STEREO);
-    i2s_zero_dma_buffer(I2S_NUM_0);
+    tft.printf("I2S NEW CHAN %d\n", i2s_new_channel(&i2s_chan_cfg, &i2s_tx_handle, NULL));
+
+    /* 初始化通道 */
+    tft.printf("I2S INIT CHAN %d\n", i2s_channel_init_std_mode(i2s_tx_handle, &i2s_std_cfg));
+
+    /* 在写入数据之前，先启用 TX 通道 */
+    tft.printf("I2S ENABLE %d\n", i2s_channel_enable(i2s_tx_handle));
+
     tft.printf("Sound Driver Ready.\n");
     new_tracker_file();
     tft.printf("MAIN INIT FINISH!\nPress OK to continue boot...\nPress BACK to enter recovery mode...\n");

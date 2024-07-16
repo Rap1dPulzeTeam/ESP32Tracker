@@ -1155,7 +1155,7 @@ LowPassFilter chl_filter[4] = {
     LowPassFilter(config.cutOffFreq[3] / 2, SMP_RATE)
 };
 
-int16_t make_data(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
+int16_t make_sound(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
     // Update indices
     if (mute[chl] || !vole || tracker_data_sample[smp_num] == NULL) return 0;
     float increment = freq / SMP_RATE;
@@ -3372,9 +3372,9 @@ void comp(void *arg) {
             for (;;) {
                 for(chl = 0; chl < CHL_NUM; chl++) {
                     if (samp_info[smp_num[chl]].loopLen > 1) {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1);
+                        buffer_ch[chl][buffPtr] = make_sound(frq[chl], vol[chl], chl, true, samp_info[smp_num[chl]].loopStart<<1, samp_info[smp_num[chl]].loopLen<<1, smp_num[chl], samp_info[smp_num[chl]].len<<1);
                     } else {
-                        buffer_ch[chl][buffPtr] = make_data(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1);
+                        buffer_ch[chl][buffPtr] = make_sound(frq[chl], vol[chl], chl, false, 0, 0, smp_num[chl], samp_info[smp_num[chl]].len<<1);
                     }
                 }
                 audio_tempL = buffer_ch[chlMap[0]][buffPtr] + buffer_ch[chlMap[1]][buffPtr];
@@ -3727,9 +3727,9 @@ void comp(void *arg) {
         } else {
             for (uint16_t i = 0; i < BUFF_SIZE; i++) {
                 if (samp_info[smp_num[0]].loopLen > 1) {
-                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_sound(frq[0], vol[0], 0, true, samp_info[smp_num[0]].loopStart<<1, samp_info[smp_num[0]].loopLen<<1, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
                 } else {
-                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_data(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
+                    buffer_ch[0][i] = buffer_ch[1][i] = buffer_ch[2][i] = buffer_ch[3][i] = make_sound(frq[0], vol[0], 0, false, 0, 0, wav_ofst[smp_num[0]], samp_info[smp_num[0]].len<<1);
                 }
                 buffer16BitStro[i].dataL = (int16_t)
                         (buffer_ch[chlMap[0]][i]

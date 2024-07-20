@@ -4430,8 +4430,18 @@ void getmem_cmd(int argc, const char* argv[]) {
         }
         printf("\n");
     }
-    // printf("MEM[%p] = ", p);
-    // printf("%d\n", *p);
+}
+
+void setmem_cmd(int argc, const char* argv[]) {
+    if (argc < 3) {printf("setmem: setmem <addrs> <val>\n");return;}
+    uint32_t addrs = strtol(argv[1], NULL, 0);
+    byte val = clamp(strtol(argv[2], NULL, 0), 0, 0xff);
+    byte *p = (byte*)addrs;
+    printf("WRITEING 0x%X TO %p...\n", val, p);
+    *p = val;
+    printf("VERIFY: VAL=0x%x, MEM=0x%x\n", val, *p);
+    if (*p != val) printf("FAILED\n");
+    else printf("SUCCESS\n");
 }
 
 // void getHardwareStatus(int argc, const char* argv[]);
@@ -4458,10 +4468,11 @@ void recovery_mode() {
     terminal.addCommand("print", printCmd);
     terminal.addCommand("jmp", jmp_cmd);
     terminal.addCommand("getmem", getmem_cmd);
+    terminal.addCommand("setmem", setmem_cmd);
     tft.setTextWrap(true);
     for (;;) {
         terminal.update();
-        vTaskDelay(32);
+        vTaskDelay(16);
     }
 }
 //----------------RECOVERY MODE--------------------------

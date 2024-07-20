@@ -235,6 +235,7 @@ typedef struct {
     bool enbLine;
     bool enbCos;
     bool enbCubic;
+    bool overSample;
     bool enbMasterDelay;
     bool enbFltr[4];
     bool enbDelay[4];
@@ -299,6 +300,7 @@ bool use_default_config() {
         .enbLine = true,
         .enbCos = false,
         .enbCubic = false,
+        .overSample = true,
         .enbMasterDelay = false,
         .enbFltr = {false, false, false, false},
         .enbDelay = {false, false, false, false},
@@ -1154,7 +1156,7 @@ LowPassFilter chl_filter[4] = {
     LowPassFilter(config.cutOffFreq[2] / 2, SMP_RATE),
     LowPassFilter(config.cutOffFreq[3] / 2, SMP_RATE)
 };
-
+/*
 int16_t make_sound(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
     // Update indices
     if (mute[chl] || !vole || tracker_data_sample[smp_num] == NULL) return 0;
@@ -1202,6 +1204,98 @@ int16_t make_sound(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t 
         result = roundf(y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0))));
     } else {
         result = tracker_data_sample[smp_num][idx];
+    }
+
+    // Apply volume
+    result *= vole;
+
+    // Additional processing like filters or effects
+    if (config.enbFltr[chl]) {
+        result = chl_filter[chl].process(result);
+    }
+    if (config.enbDelay[chl]) {
+        result = result;//audioDelay(result, channel_delay_config[chl], chl);
+    }
+
+    return result;
+}
+*/
+#define OVERSAMPLING_FACTOR 4
+
+int16_t make_sound(float freq, uint8_t vole, uint8_t chl, bool isLoop, uint16_t loopStart, uint16_t loopLen, uint8_t smp_num, uint16_t smp_size) {
+    // Update indices
+    if (mute[chl] || !vole || tracker_data_sample[smp_num] == NULL) return 0;
+    float increment = freq / SMP_RATE;
+
+    int16_t result = 0;
+
+    if (config.overSample) {
+        float sum = 0;
+        for (int os = 0; os < OVERSAMPLING_FACTOR; ++os) {
+            frac_index[chl] += increment / OVERSAMPLING_FACTOR;
+            if (frac_index[chl] >= 1.0) {
+                int_index[chl] += (int)frac_index[chl]; // Increment the integer index by the whole part of frac_index
+                frac_index[chl] -= (int)frac_index[chl]; // Keep only the fractional part
+            }
+
+            // Handle looping or stopping at sample end
+            if (isLoop) {
+                while (int_index[chl] >= (loopStart + loopLen)) {
+                    int_index[chl] -= loopLen;
+                }
+            } else if (int_index[chl] >= smp_size) {
+                vol[chl] = 0;
+                continue; // Skip this sample in oversampling
+            }
+
+            int idx = int_index[chl];
+            sum += tracker_data_sample[smp_num][idx]; // Assume nearest-neighbor for simplicity
+        }
+        // Average the results from oversampling
+        result = (int16_t)(sum / OVERSAMPLING_FACTOR);
+    } else {
+        frac_index[chl] += increment;
+        if (frac_index[chl] >= 1.0) {
+            int_index[chl] += (int)frac_index[chl];
+            frac_index[chl] -= (int)frac_index[chl];
+        }
+
+        if (isLoop) {
+            while (int_index[chl] >= (loopStart + loopLen)) {
+                int_index[chl] -= loopLen;
+            }
+        } else if (int_index[chl] >= smp_size) {
+            vol[chl] = 0;
+            return 0;
+        }
+
+        int idx = int_index[chl];
+        float frac = frac_index[chl];
+        
+        // Perform interpolation
+        if (config.enbLine) {
+            int nextIdx = (idx + 1) % smp_size;
+            int16_t sample1 = tracker_data_sample[smp_num][idx];
+            int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
+            result = roundf((1.0f - frac) * sample1 + frac * sample2);
+        } else if (config.enbCos) {
+            int nextIdx = (idx + 1) % smp_size;
+            int16_t sample1 = tracker_data_sample[smp_num][idx];
+            int16_t sample2 = tracker_data_sample[smp_num][nextIdx];
+            float f_t = (1 - cosf(M_PI_F * frac)) / 2;
+            result = roundf((1.0f - f_t) * sample1 + f_t * sample2);
+        } else if (config.enbCubic) {
+            int prevIdx = (idx > 0 ? idx - 1 : smp_size - 1);
+            int nextIdx1 = (idx + 1) % smp_size;
+            int nextIdx2 = (idx + 2) % smp_size;
+            int8_t y0 = tracker_data_sample[smp_num][prevIdx];
+            int8_t y1 = tracker_data_sample[smp_num][idx];
+            int8_t y2 = tracker_data_sample[smp_num][nextIdx1];
+            int8_t y3 = tracker_data_sample[smp_num][nextIdx2];
+            result = roundf(y1 + 0.5f * frac * (y2 - y0 + frac * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 + frac * (3.0f * (y1 - y2) + y3 - y0))));
+        } else {
+            result = tracker_data_sample[smp_num][idx];
+        }
     }
 
     // Apply volume
@@ -3125,6 +3219,8 @@ void Setting() {
                                         "Close"};
     int8_t optPos = 0;
     uint8_t optPos_last = 0;
+    Animation AnimMenu = Animation();
+SETTING_REDRAW:
     frame.drawFastHLine(0, 9, 160, 0xe71c);
     frame.fillRect(0, 10, 160, 118, ST7735_BLACK);
     frame.setCursor(1, 11);
@@ -3133,7 +3229,6 @@ void Setting() {
     frame.printf("SETTINGS\n");
     frame.setTextSize(0);
     frame.drawFastHLine(0, 26, 160, 0xa6bf);
-    Animation AnimMenu = Animation();
     for (;;) {
         frame.fillRect(0, 27, 160, 107, ST7735_BLACK);
         frame.setCursor(0, 29);
@@ -3162,7 +3257,13 @@ void Setting() {
         if (readOptionKeyEvent == pdTRUE) if (optionKeyEvent.status == KEY_ATTACK) {
             if (optionKeyEvent.num == KEY_OK) {
                 if (optPos == 0) {
-                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 4, config.enbCubic ? 3 : (config.enbCos ? 2 : (config.enbLine ? 1 : (!config.enbCos && !config.enbLine && !config.enbCubic ? 4 : -1))), 90, "Linear", "Cosine", "Cubic Spline", "OFF");
+                    int8_t menuInitVal;
+                    if (config.enbLine) menuInitVal = 1;
+                    else if (config.enbCos) menuInitVal = 2;
+                    else if (config.enbCubic) menuInitVal = 3;
+                    else if (config.overSample) menuInitVal = 4;
+                    else menuInitVal = 5;
+                    int8_t menuRtrn = windowsMenuBlocking(menuStr[optPos], 5, menuInitVal, 90, "Linear", "Cosine", "Cubic Spline", "Over Sample", "OFF");
                     switch (menuRtrn)
                     {
                     case 0:
@@ -3182,9 +3283,15 @@ void Setting() {
 
                     case 3:
                         config.enbCubic = config.enbCos = config.enbLine = false;
+                        config.overSample = true;
+                        break;
+
+                    case 4:
+                        config.enbCubic = config.enbCos = config.enbLine = config.overSample = false;
                         break;
                     }
                     printf("MENU RETURN %d\n", menuRtrn);
+                    goto SETTING_REDRAW;
                 }
                 if (optPos == 1) {
                     int8_t menuRtrn = windowsMenuBlocking("Show EFX", 2, dispShowEfct+1, 60, "OFF", "ON");
@@ -3359,8 +3466,8 @@ void comp(void *arg) {
     uint16_t buffPtr = 0;
     dispReadConfigStatus = true;
     xTaskCreate(i2s_write_task, "I2S_WRITE", 2048, NULL, 5, &I2S_WRITE_H);
-    LowPassFilter antiAliasingL(SMP_RATE / 2, SMP_RATE);
-    LowPassFilter antiAliasingR(SMP_RATE / 2, SMP_RATE);
+    // LowPassFilter antiAliasingL(SMP_RATE / 2, SMP_RATE);
+    // LowPassFilter antiAliasingR(SMP_RATE / 2, SMP_RATE);
     for(;;) {
         // printf("READ!\n");
         if (playStat) {
@@ -3385,8 +3492,8 @@ void comp(void *arg) {
                     audio_tempR = master_limiter.audioLimit(audio_tempR, &limitStats);
                 }
 
-                audio_tempL = antiAliasingL.process(audio_tempL);
-                audio_tempR = antiAliasingR.process(audio_tempR);
+                // audio_tempL = antiAliasingL.process(audio_tempL);
+                // audio_tempR = antiAliasingR.process(audio_tempR);
 
                 buffer16BitStro[buffPtr].dataL = audio_tempL;
                 buffer16BitStro[buffPtr].dataR = audio_tempR;
@@ -4291,6 +4398,42 @@ void displayBack_lcd(const char *str, bool enter) {
     tft.printf(enter ? "%s\n" : "%s", str);
 }
 
+void jmp_cmd(int argc, const char* argv[]) {
+    if (argc == 1) {printf("jmp: jmp <addrs>\n");return;}
+    void (*func)() = (void(*)())strtol(argv[1], NULL, 0);
+    printf("JUMP TO %p\n", func);
+    func();
+}
+
+void getmem_cmd(int argc, const char* argv[]) {
+    if (argc < 3) {printf("getmem: getmem <addrs> <len>\n");return;}
+    uint32_t start = strtol(argv[1], NULL, 0);
+    uint32_t len = strtol(argv[2], NULL, 0);
+    byte *p = (byte*)start;
+    uint32_t end = (uint32_t)p + len;
+    uint16_t count = len / 16;
+    printf("      ADRS    00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F     0123456789ABCEDF\n");
+    printf("------------------------------------------------------------------------------------\n");
+    for (uint8_t i = 0; i < count; i++) {
+        printf("%10p    ", p);
+        byte tmp[16];
+        for (uint8_t j = 0; j < 16; j++) {
+            tmp[j] = *p;
+            p++;
+        }
+        for (uint8_t idx = 0; idx < 16; idx++) {
+            printf(tmp[idx] < 0x10 ? "0%X " : "%X ", tmp[idx]);
+        }
+        printf("    ");
+        for (uint8_t idx = 0; idx < 16; idx++) {
+            printf(tmp[idx] == NULL ? "." : "%c", iscntrl(tmp[idx]) ? ' ' : tmp[idx]);
+        }
+        printf("\n");
+    }
+    // printf("MEM[%p] = ", p);
+    // printf("%d\n", *p);
+}
+
 // void getHardwareStatus(int argc, const char* argv[]);
 
 void recovery_mode() {
@@ -4302,6 +4445,7 @@ void recovery_mode() {
     tft.printf("ESP32Tracker Recovery Mode\n");
     tft.printf("BUILD DATA:\n%s %s\n", __DATE__, __TIME__);
     in_recovery_mode = true;
+    tft.printf("lcdbuf in %p\n          %d\n", frame.lcd_buffer, &frame.lcd_buffer);
     SerialTerminal terminal;
     SerialTerminal::instance = &terminal;
     tft.printf("Serial BaudRate=115200\n");
@@ -4312,6 +4456,8 @@ void recovery_mode() {
     terminal.addCommand("version", getVersion);
     terminal.addCommand("lcd_print", lcd_printCmd);
     terminal.addCommand("print", printCmd);
+    terminal.addCommand("jmp", jmp_cmd);
+    terminal.addCommand("getmem", getmem_cmd);
     tft.setTextWrap(true);
     for (;;) {
         terminal.update();

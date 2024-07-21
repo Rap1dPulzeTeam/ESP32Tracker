@@ -37,6 +37,8 @@
 #include "JetBrainsMonoNL_MediumItalic8pt7b.h"
 // #include "esp32/clk.h"
 #include "trackerIcon.h"
+#include "R-C.h"
+#include "fast_sin.h"
 
 #include "TM1650.h"
 
@@ -387,6 +389,73 @@ float fast_exp(float x) {
     } u;
     u.i = (uint32_t)(12102203 * x + 1064866805);
     return u.f;
+}
+
+void rotate_axis(uint16_t* input, uint16_t* output, uint16_t w, uint16_t h, int16_t ax, int16_t ay, int16_t az, int16_t fl) {
+    memset(output, 0, w * h * sizeof(uint16_t));
+
+    uint16_t x, y;
+    for (y = 0; y < h; ++y) {
+        for (x = 0; x < w; ++x) {
+            float rel_x = x - w / 2.0f;
+            float rel_y = y - h / 2.0f;
+
+            float x_new = rel_x * ffast_cos(ay) - rel_x * ffast_sin(ay);
+            float z = rel_x * ffast_sin(ay) + rel_x * ffast_cos(ay);
+
+            float y_new = rel_y * ffast_cos(ax) - z * ffast_sin(ax);
+            z = rel_y * ffast_sin(ax) + z * ffast_cos(ax);
+
+            float tmp_x = x_new * ffast_cos(az) - y_new * ffast_sin(az);
+            float tmp_y = x_new * ffast_sin(az) + y_new * ffast_cos(az);
+
+            float scale = fl / (fl - z);
+            int16_t final_x = (int16_t)(tmp_x * scale + w / 2.0f);
+            int16_t final_y = (int16_t)(tmp_y * scale + h / 2.0f);
+
+            if (final_x >= 0 && final_x < w && final_y >= 0 && final_y < h) {
+                output[final_y * w + final_x] = input[y * w + x];
+            }
+        }
+    }
+
+    for (y = 1; y < h - 1; ++y) {
+        for (x = 1; x < w - 1; ++x) {
+            bool isIntp = false;
+            if (!output[y * w + x]) {
+                uint16_t colors[8] = {
+                    output[(y-1) * w + (x-1)], output[(y-1) * w + x], output[(y-1) * w + (x+1)],
+                    output[y * w + (x-1)], output[y * w + (x+1)],
+                    output[(y+1) * w + (x-1)], output[(y+1) * w + x], output[(y+1) * w + (x+1)]
+                };
+                uint8_t reds[8], greens[8], blues[8];
+                int valid_count = 0;
+                uint32_t red_sum = 0, green_sum = 0, blue_sum = 0;
+
+                for (uint8_t i = 0; i < 8; i++) {
+                    if (colors[i]) isIntp = true;
+                }
+                if (isIntp) {
+                    for (int i = 0; i < 8; i++) {
+                        reds[i] = (colors[i] >> 11) & 0x1F;
+                        greens[i] = (colors[i] >> 5) & 0x3F;
+                        blues[i] = colors[i] & 0x1F;
+                        red_sum += reds[i];
+                        green_sum += greens[i];
+                        blue_sum += blues[i];
+                        valid_count++;
+                    }
+                }
+
+                if (valid_count > 0) {
+                    uint8_t red_avg = red_sum / valid_count;
+                    uint8_t green_avg = green_sum / valid_count;
+                    uint8_t blue_avg = blue_sum / valid_count;
+                    output[y * w + x] = (red_avg << 11) | (green_avg << 5) | blue_avg;
+                }
+            }
+        }
+    }
 }
 
 class Animation {
@@ -3298,7 +3367,19 @@ SETTING_REDRAW:
                     dispShowEfct = menuRtrn != -1 ? menuRtrn : dispShowEfct;
                     printf("MENU RETURN %d\n", dispShowEfct);
                 }
-                if (optPos == 2) {MenuPos = 6; break;}
+                if (optPos == 2) //{MenuPos = 6; break;}
+                {
+                    tft.drawRGBBitmap(0, 14, acat, 160, 106);
+                    uint16_t *acatOutput = (uint16_t*)malloc(160 * 106 * sizeof(uint16_t*));
+                    // while (readOptionKeyEvent != pdTRUE) {
+                    while (1) {
+                        for (int16_t y = 0; y < 360; y++) {
+                            rotate_axis((uint16_t*)acat, acatOutput, 160, 106, y, 0, y, 300);
+                            tft.drawRGBBitmap(0, 14, acatOutput, 160, 106);
+                        }
+                        vTaskDelay(1);
+                    }
+                }
                 if (optPos == 3) wav_player();
                 if (optPos == 4) {
                     if (writeConfig(&config)) sendPopUpEvent("Save Success", 1024);

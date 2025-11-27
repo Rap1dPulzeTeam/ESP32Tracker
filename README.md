@@ -1,5 +1,7 @@
 # ESP32Tracker
 
+## 本人不是作者！作者是：jsjsjsjsjsjsjson       这只是一个fork。
+
 ---
 ![1000053426](https://github.com/Rap1dPulzeTeam/ESP32Tracker/assets/86410439/59e0d961-2ec9-4345-bcf4-6c4aa127cd60)
 

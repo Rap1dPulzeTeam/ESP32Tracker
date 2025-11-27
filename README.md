@@ -1,6 +1,6 @@
 # ESP32Tracker
 
-## 本人不是作者！作者是：jsjsjsjsjsjsjson       这只是一个fork。
+## 本人不是作者！作者是：jsjsjsjsjsjsjson       由于RPTeam已经解散但是项目转不回去，所以暂存于此。
 
 ---
 ![1000053426](https://github.com/Rap1dPulzeTeam/ESP32Tracker/assets/86410439/59e0d961-2ec9-4345-bcf4-6c4aa127cd60)
